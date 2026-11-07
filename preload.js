@@ -65,6 +65,15 @@ contextBridge.exposeInMainWorld('projectsAPI', {
   onChanged: (cb) => ipcRenderer.on('projects:changed', (_, state) => cb(state)),
 });
 
+contextBridge.exposeInMainWorld('historyAPI', {
+  append: (projectId, chatId, entries) =>
+    ipcRenderer.invoke('history:append', { projectId, chatId, entries }),
+  readLast: (projectId, chatId) =>
+    ipcRenderer.invoke('history:readLast', { projectId, chatId }),
+  readPage: (projectId, chatId, page) =>
+    ipcRenderer.invoke('history:readPage', { projectId, chatId, page }),
+});
+
 contextBridge.exposeInMainWorld('appAPI', {
   onReady: (cb) => ipcRenderer.on('app:ready', (_, data) => cb(data)),
   retryBoot: () => ipcRenderer.invoke('app:retryBoot'),

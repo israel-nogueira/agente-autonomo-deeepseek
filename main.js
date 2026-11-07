@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
 const { runAgent, pruneSessionLog } = require('./agent/loop');
+const history = require('./agent/history');
 const { compactSession } = require('./agent/compact');
 const { disableDeepSeekFeatures, resetChat, requestAbort, waitChatReady } = require('./agent/bridge');
 const { killActiveProcesses, resetReadCache } = require('./agent/tools');
@@ -824,6 +825,7 @@ ipcMain.handle('projects:delete', async (event, { projectId, remote }) => {
 
     const wasActive = activeProjectId === projectId;
     const rr = projects.deleteProject(projectId);
+    try { history.deleteProject(projectId); } catch (e) { /* ignora */ }
 
     if (wasActive) {
       applyActiveState();
@@ -955,6 +957,8 @@ ipcMain.handle('projects:deleteChat', async (event, { projectId, uuid, remote })
     const r = projects.deleteChat(projectId, uuid);
     if (isActive) applyActiveState();
 
+    try { history.deleteChat(projectId, uuid); } catch (e) { /* ignora */ }
+
     notifyProjectsChanged();
     return {
       ok: true, remoteDeleted: wantRemote && !isPending,
@@ -1003,7 +1007,33 @@ ipcMain.handle('projects:openSessionPopup', (event, { uuid, label }) => {
   try { return openSessionPopup(uuid, label); }
   catch (e) { return { ok: false, error: e.message }; }
 });
+// ============================================================
+// IPC — history (paginas HTML do chat)
+// ============================================================
+ipcMain.handle('history:append', (event, { projectId, chatId, entries }) => {
+  if (!isNonEmptyString(projectId)) return { ok: false, error: 'projectId invalido' };
+  if (!isNonEmptyString(chatId)) return { ok: false, error: 'chatId invalido' };
+  if (!Array.isArray(entries)) return { ok: false, error: 'entries invalido' };
+  try { return history.append(projectId, chatId, entries); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
 
+ipcMain.handle('history:readLast', (event, { projectId, chatId }) => {
+  if (!isNonEmptyString(projectId)) return { entries: [], page: 0, totalPages: 0 };
+  if (!isNonEmptyString(chatId)) return { entries: [], page: 0, totalPages: 0 };
+  try { return history.readLast(projectId, chatId); }
+  catch (e) { return { entries: [], page: 0, totalPages: 0 }; }
+});
+
+ipcMain.handle('history:readPage', (event, { projectId, chatId, page }) => {
+  if (!isNonEmptyString(projectId)) return { entries: [], page: 0, totalPages: 0 };
+  if (!isNonEmptyString(chatId)) return { entries: [], page: 0, totalPages: 0 };
+  if (typeof page !== 'number' || !Number.isFinite(page) || page < 1) {
+    return { entries: [], page: 0, totalPages: 0 };
+  }
+  try { return history.readPage(projectId, chatId, page); }
+  catch (e) { return { entries: [], page: 0, totalPages: 0 }; }
+});
 // ============================================================
 // IPC — stats / diagnose
 // ============================================================
@@ -1084,8 +1114,10 @@ async function syncPendingChat(sendLog) {
         const pendingChat = projects.getChat(activeProjectId, activeChatUuid);
         const pendingLabel = (pendingChat && pendingChat.label) ? pendingChat.label : null;
         const label = existing ? existing.label : (pendingLabel || nextSessionLabel(activeProjectId));
+        const oldPendingUuid = activeChatUuid;
         projects.replaceChat(activeProjectId, activeChatUuid, uuid, currentUrl, label);
         activeChatUuid = uuid;
+        try { history.renameChat(activeProjectId, oldPendingUuid, uuid); } catch (e) { sendLog('[main] history.renameChat falhou: ' + e.message); }
         sendLog('[main] placeholder substituido por chat real: ' + uuid);
         try { persistActiveChatState(); } catch (e) {}
 
@@ -1361,6 +1393,7 @@ async function appBoot() {
   try {
     splashStatus('Carregando projetos…');
     projects.init(app.getPath('userData'));
+    try { history.init(app.getPath('userData')); } catch (e) { console.warn('[main] history.init falhou:', e.message); }
     applyActiveState();
     splashStatus('Abrindo DeepSeek…');
     createChatWindow();
