@@ -481,28 +481,6 @@ button{cursor:pointer}
   cursor: default;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /* ============================================================
    Ajuste fino de tipografia do chat (parecido com o DeepSeek Web)
    ============================================================ */
@@ -638,3 +616,23 @@ button{cursor:pointer}
   background: rgba(239, 68, 68, 0.08);
 }
 .markdown-body .markdown-alert-caution .markdown-alert-title { color: #f87171; }
+
+/* Botao para carregar paginas anteriores do historico */
+.history-more{
+  display:block;
+  width:auto;
+  margin:8px auto;
+  padding:6px 14px;
+  background:transparent;
+  border:1px solid var(--border);
+  border-radius:8px;
+  color:var(--muted);
+  font-size:11px;
+  font-weight:600;
+  cursor:pointer;
+}
+.history-more:hover{
+  border-color:#5477b4;
+  background:#192842;
+  color:#e9f1ff;
+}

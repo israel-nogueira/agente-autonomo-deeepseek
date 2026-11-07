@@ -13,6 +13,8 @@ const state = {
 	chatWindowVisible: true,
 	activeAssistantBlock: null,
 	booted: false,
+	histPage: 0,
+	histTotal: 0,
 };
 
 const TOKENS_WARN = 12000;
@@ -158,6 +160,7 @@ async function boot() {
 	try {
 		const st = await window.projectsAPI.state();
 		applyState(st);
+		try { await restoreHistory(); } catch (e) {}
 	} catch (e) { showDiag('Falha ao carregar projetos: ' + e.message, false); }
 	try {
 		const v = await window.agentAPI.isChatVisible();
@@ -373,6 +376,7 @@ async function activateProject(projectId) {
 		hideOverlay();
 		clearTimeline();
 		applyState(res.state);
+		try { await restoreHistory(); } catch (e) {}
 		if (res.stats) applyStats(res.stats);
 	} catch (e) { overlayError(e.message, () => activateProject(projectId)); }
 }
@@ -1141,6 +1145,7 @@ async function executeRun(task, opts) {
 		state.running = false;
 		applyRunningState(false);
 		clearPendingTimers();
+		try { await persistTimeline(); } catch (e) {}
 	}
 }
 async function runTask() {
@@ -1187,7 +1192,7 @@ async function doCompact() {
 			showDiag('Nova sessão criada com o resumo da anterior.', true);
 		}
 		if (res.stats) applyStats(res.stats);
-		try { const st = await window.projectsAPI.state(); applyState(st); } catch (e) {}
+		try { const st = await window.projectsAPI.state(); applyState(st); await persistTimeline(); } catch (e) {}
 	} catch (e) {
 		removeCompacting();
 		appendAssistantMessage('❌ ERRO: ' + e.message, timeNow());
@@ -1333,6 +1338,7 @@ $('modalProjectSave').addEventListener('click', async () => {
 		if (!res.ok) { alert('Erro: ' + res.error); return; }
 		clearTimeline();
 		applyState(res.state);
+		try { await restoreHistory(); } catch (e) {}
 		if (res.stats) applyStats(res.stats);
 	} finally {
 		creatingProject = false;
@@ -1418,6 +1424,7 @@ $('modalDeleteConfirm').addEventListener('click', async () => {
 			}
 			clearTimeline();
 			applyState(res.state);
+			try { await restoreHistory(); } catch (e) {}
 			if (res.stats) applyStats(res.stats);
 		} catch (e) { if (remote) hideOverlay(); alert('Erro: ' + e.message); }
 		$('modalDelete').style.display = 'none';
@@ -1467,6 +1474,7 @@ $('modalDeleteConfirm').addEventListener('click', async () => {
 		}
 		if (wasActive) clearTimeline();
 		applyState(res.state);
+		if (wasActive) { try { await restoreHistory(); } catch (e) {} }
 		if (res.stats) applyStats(res.stats);
 	} catch (e) { if (remote) hideOverlay(); alert('Erro: ' + e.message); }
 	$('modalDelete').style.display = 'none';
@@ -1534,3 +1542,159 @@ window.agentAPI.onLog((msg) => {
 });
 
 window.projectsAPI.onChanged((st) => { applyState(st); });
+
+// ============================================================
+// Persistencia e restauracao do historico visual
+// ============================================================
+async function persistTimeline() {
+  const projectId = state.activeProjectId;
+  const chatId = state.activeChatUuid;
+  if (!projectId || !chatId) return;
+  if (!window.historyAPI) return;
+
+  const content = $('chatContent');
+  if (!content) return;
+
+  const entries = [];
+  const nodes = [];
+  const children = content.children;
+  for (let i = 0; i < children.length; i++) {
+    const node = children[i];
+    if (!node || node.dataset.hist === '1') continue;
+    if (node.id === 'emptyState') continue;
+    if (node.classList.contains('compacting')) continue;
+    if (node.classList.contains('live-status')) continue;
+    if (node.classList.contains('history-more')) continue;
+
+    let kind = 'assistant';
+    if (node.classList.contains('msg-row') && node.classList.contains('user')) kind = 'user';
+    else if (node.classList.contains('activity')) kind = 'event';
+    else if (node.classList.contains('session-marker')) kind = 'system';
+    else if (node.classList.contains('msg-row')) kind = 'assistant';
+    else continue;
+
+    const clone = node.cloneNode(true);
+    const reviewBtn = clone.querySelector('.review-btn');
+    if (reviewBtn) reviewBtn.remove();
+    const detailsList = clone.querySelectorAll('details[open]');
+    for (const d of detailsList) d.removeAttribute('open');
+
+    entries.push({ t: Date.now(), kind, html: clone.outerHTML });
+    nodes.push(node);
+  }
+
+  if (!entries.length) return;
+
+  try {
+    const res = await window.historyAPI.append(projectId, chatId, entries);
+    if (res && res.ok) {
+      for (const node of nodes) node.dataset.hist = '1';
+    }
+  } catch (e) {}
+}
+
+// Limpeza minima (sem allowlist) para restaurar HTML ja gravado.
+function cleanHistoryNode(node) {
+  if (!node || node.nodeType !== 1) return node;
+  const bad = node.querySelectorAll('script, iframe, object, embed');
+  for (const el of Array.from(bad)) el.remove();
+  const all = [node].concat(Array.from(node.querySelectorAll('*')));
+  for (const el of all) {
+    if (el.nodeType !== 1) continue;
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (name.indexOf('on') === 0) { el.removeAttribute(attr.name); continue; }
+      if (name === 'href' || name === 'src') {
+        const val = (el.getAttribute(attr.name) || '').trim().toLowerCase();
+        if (val.indexOf('javascript:') === 0) el.removeAttribute(attr.name);
+      }
+    }
+  }
+  return node;
+}
+
+function entryToNode(html) {
+  const template = document.createElement('template');
+  template.innerHTML = String(html || '');
+  const node = template.content.firstElementChild;
+  if (!node) return null;
+  return cleanHistoryNode(node);
+}
+
+async function restoreHistory() {
+  const projectId = state.activeProjectId;
+  const chatId = state.activeChatUuid;
+  if (!projectId || !chatId) return;
+  if (!window.historyAPI) return;
+
+  try {
+    const res = await window.historyAPI.readLast(projectId, chatId);
+    if (!res || !Array.isArray(res.entries) || res.entries.length === 0) return;
+
+    ensureEmptyRemoved();
+    const content = $('chatContent');
+    for (const entry of res.entries) {
+      const node = entryToNode(entry.html);
+      if (!node) continue;
+      node.dataset.hist = '1';
+      content.appendChild(node);
+    }
+    scrollToBottom();
+
+    state.histPage = res.page || 1;
+    state.histTotal = res.totalPages || 1;
+
+    if (state.histTotal > 1 && state.histPage > 1) {
+      insertHistoryMoreButton();
+    }
+  } catch (e) {}
+}
+
+function insertHistoryMoreButton() {
+  const content = $('chatContent');
+  if (!content) return;
+  if (content.querySelector('.history-more')) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'history-more';
+  btn.textContent = 'Carregar mensagens anteriores';
+  btn.addEventListener('click', loadPreviousHistoryPage);
+  content.insertBefore(btn, content.firstChild);
+}
+
+async function loadPreviousHistoryPage() {
+  const projectId = state.activeProjectId;
+  const chatId = state.activeChatUuid;
+  if (!projectId || !chatId) return;
+  if (!window.historyAPI) return;
+  const btn = document.querySelector('#chatContent .history-more');
+  if (!btn) return;
+  const targetPage = state.histPage - 1;
+  if (targetPage < 1) { btn.remove(); return; }
+
+  try {
+    const res = await window.historyAPI.readPage(projectId, chatId, targetPage);
+    if (!res || !Array.isArray(res.entries) || res.entries.length === 0) {
+      btn.remove();
+      return;
+    }
+    const content = $('chatContent');
+    const timeline = $('timeline');
+    const prevHeight = timeline ? timeline.scrollHeight : 0;
+
+    for (const entry of res.entries) {
+      const node = entryToNode(entry.html);
+      if (!node) continue;
+      node.dataset.hist = '1';
+      content.insertBefore(node, btn);
+    }
+
+    state.histPage = targetPage;
+    if (state.histPage <= 1) btn.remove();
+
+    if (timeline) {
+      const newHeight = timeline.scrollHeight;
+      timeline.scrollTop = timeline.scrollTop + (newHeight - prevHeight);
+    }
+  } catch (e) {}
+}
