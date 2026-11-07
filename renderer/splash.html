@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="utf-8">
+    <title>Carregando…</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+            -webkit-app-region: drag;
+            user-select: none;
+        }
+
+        button {
+            -webkit-app-region: no-drag;
+        }
+
+        .splash {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            border-radius: 14px;
+            background: #0c1017;
+            /* A janela ja e' 520x320 e transparent; aqui so arredondamos. */
+        }
+
+        /* Background image: cobre tudo, sem distorcer */
+        .bg {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: center;
+            display: block;
+            pointer-events: none;
+            user-select: none;
+        }
+
+        /* Barra de status no rodape, sobre a imagem */
+        .status-bar {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 20px;
+            background: linear-gradient(to top,
+                    rgba(8, 12, 18, 0.92) 0%,
+                    rgba(8, 12, 18, 0.78) 60%,
+                    rgba(8, 12, 18, 0) 100%);
+            color: #e8edf5;
+            font-size: 12px;
+            font-weight: 500;
+            letter-spacing: 0.1px;
+        }
+
+        .bullet {
+            flex-shrink: 0;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #78a4ff;
+            box-shadow: 0 0 0 4px rgba(71, 120, 211, 0.22);
+            animation: pulse 1.2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+
+            50% {
+                opacity: 0.45;
+                transform: scale(0.75);
+            }
+        }
+
+        #caption {
+            flex: 1;
+            min-width: 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Estado de erro: overlay escuro sobre a imagem, com botao */
+        .error-overlay {
+            position: absolute;
+            inset: 0;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            padding: 24px;
+            background: rgba(8, 12, 18, 0.86);
+            -webkit-backdrop-filter: blur(6px);
+            backdrop-filter: blur(6px);
+            text-align: center;
+            border-radius: 14px;
+        }
+
+        .error-overlay.show {
+            display: flex;
+        }
+
+        .error-msg {
+            color: #fecaca;
+            font-size: 12px;
+            line-height: 1.55;
+            max-width: 380px;
+            word-break: break-word;
+        }
+
+        .error-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid #3a3f4a;
+            background: #2a2d35;
+            color: #e8eaed;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            -webkit-app-region: no-drag;
+        }
+
+        .btn:hover {
+            background: #3a3f4a;
+        }
+
+        .btn.primary {
+            background: #2563eb;
+            border-color: #3b82f6;
+            color: #fff;
+        }
+
+        .btn.primary:hover {
+            background: #3b82f6;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="splash" id="splash">
+        <!-- Background image (path relativo ao renderer/) -->
+        <img class="bg" src="./splashScreen.png" alt="" draggable="false">
+
+        <!-- Barra de status no rodape, colada na base -->
+        <div class="status-bar" id="statusBar">
+            <span class="bullet" id="bullet"></span>
+            <span id="caption">Iniciando…</span>
+        </div>
+
+        <!-- Estado de erro (so aparece se o boot falhar) -->
+        <div class="error-overlay" id="errorOverlay">
+            <div class="error-msg" id="errorMsg">Falha ao iniciar.</div>
+            <div class="error-actions">
+                <button class="btn primary" id="retryBtn" type="button">Tentar de novo</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Splash roda com nodeIntegration:true e contextIsolation:false
+        // (definido em main.js → createSplashWindow).
+        const { ipcRenderer } = require('electron');
+        const $ = (id) => document.getElementById(id);
+
+        // Status: atualiza o texto inline mantendo o bullet pulsando
+        ipcRenderer.on('splash:status', (_, data) => {
+            if (data && typeof data.message === 'string' && data.message.length > 0) {
+                $('caption').textContent = data.message;
+            }
+        });
+
+        // Erro: mostra overlay escuro sobre a imagem (bullet some)
+        ipcRenderer.on('splash:error', (_, data) => {
+            const msg = (data && data.message) ? data.message : 'Falha ao iniciar.';
+            $('errorMsg').textContent = msg;
+            $('errorOverlay').classList.add('show');
+            $('statusBar').style.display = 'none';
+        });
+
+        // Retry: esconde o overlay de erro, volta ao estado normal e
+        // avisa o main pra tentar o boot de novo.
+        $('retryBtn').addEventListener('click', () => {
+            $('errorOverlay').classList.remove('show');
+            $('statusBar').style.display = 'flex';
+            $('caption').textContent = 'Tentando novamente…';
+            ipcRenderer.send('app:retryBoot');
+        });
+    </script>
+</body>
+
+</html>

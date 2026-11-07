@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Agente DeepSeek</title>
+  <link rel="stylesheet" href="./app.css">
+</head>
+
+<body>
+
+  <div id="bootCover"></div>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-spark" viewBox="0 0 24 24">
+      <path d="m12 2 1.8 5.8L20 10l-6.2 2.2L12 18l-1.8-5.8L4 10l6.2-2.2L12 2Z" />
+    </symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24">
+      <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24">
+      <path d="M12 5v14M5 12h14" />
+    </symbol>
+    <symbol id="i-package" viewBox="0 0 24 24">
+      <path
+        d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+      <path d="m3.3 7 8.7 5 8.7-5M12 22V12" />
+    </symbol>
+    <symbol id="i-chats" viewBox="0 0 24 24">
+      <path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H8l-4 3v-6A7.5 7.5 0 1 1 20 11.5Z" />
+      <path d="M8 9h8M8 13h5" />
+    </symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24">
+      <path d="m6 9 6 6 6-6" />
+    </symbol>
+    <symbol id="i-send" viewBox="0 0 24 24">
+      <path d="m5 12 14-8-3 16-4-6-7-2Z" />
+      <path d="m12 14 7-10" />
+    </symbol>
+    <symbol id="i-external" viewBox="0 0 24 24">
+      <path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+    </symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24">
+      <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
+    </symbol>
+    <symbol id="i-file" viewBox="0 0 24 24">
+      <path d="M7 3h7l5 5v13H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />
+      <path d="M14 3v6h5M9 13h6M9 17h5" />
+    </symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="m7 9 3 3-3 3M12 15h5" />
+    </symbol>
+    <symbol id="i-diff" viewBox="0 0 24 24">
+      <path d="M4 7h7M4 12h7M4 17h7M15 7h6M18 4v6M15 17h6" />
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.3-4.3" />
+    </symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24">
+      <path d="M12 20h9M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+    </symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24">
+      <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    </symbol>
+    <symbol id="i-dots" viewBox="0 0 24 24">
+      <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none" />
+    </symbol>
+  </svg>
+
+  <div class="app">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar" aria-label="Projetos">
+      <div class="brandbar">
+        <div class="mark"><svg class="i">
+            <use href="#i-spark" />
+          </svg></div>
+        <div>
+          <div class="brand">Agente DeepSeek</div>
+          <div class="brand-sub">Code agent workspace</div>
+        </div>
+      </div>
+      <div class="project-head">
+        <span class="side-label">PROJETOS</span>
+        <button class="icon-btn" id="btnAddProject" aria-label="Adicionar projeto" title="Novo projeto"><svg class="i">
+            <use href="#i-plus" />
+          </svg></button>
+      </div>
+      <div class="projects" id="projectsList"></div>
+      <div class="side-bottom">
+        <span class="dot" id="statusDot"></span>
+        <span class="grow" id="engineStatus">DeepSeek conectado</span>
+        <button class="open-ds" id="btnOpenDeepSeek" type="button"><svg class="i">
+            <use href="#i-external" />
+          </svg>Abrir DeepSeek</button>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <section class="main">
+      <header class="chatbar">
+        <div class="chat-info">
+          <div class="chat-title" id="activeTitle">—</div>
+          <div class="chat-subtitle" id="activeSubtitle">—</div>
+        </div>
+        <div class="toolbar">
+          <details class="session-wrap" id="sessionsWrap">
+            <summary class="toolbar-btn" aria-label="Sessões">
+              <svg class="i">
+                <use href="#i-chats" />
+              </svg><span>Sessions</span><svg class="i">
+                <use href="#i-chevron" />
+              </svg>
+            </summary>
+            <div class="sessions-popover" role="dialog" aria-label="Sessões do DeepSeek">
+              <div class="popover-title">Sessions</div>
+              <div class="popover-caption">Conversas do projeto selecionado</div>
+              <input class="session-filter" id="sessionFilter" type="search" placeholder="Buscar uma sessão..."
+                aria-label="Buscar sessões">
+              <div class="sessions-list" id="sessionsList"></div>
+            </div>
+          </details>
+          <button class="toolbar-btn" id="btnCompactNow" type="button"
+            title="Compactar a sessão atual (cria uma nova sessão com o resumo)">
+            <svg class="i">
+              <use href="#i-package" />
+            </svg><span>Compactar</span>
+          </button>
+        </div>
+      </header>
+
+      <div id="compactBanner" class="compact-banner" style="display:none">
+        <span class="msg" id="compactBannerMsg">⚠️ Hora de compactar</span>
+        <button id="compactBannerBtn" type="button">📦 Compactar agora</button>
+      </div>
+
+      <div class="chat-stats" id="chatStats" aria-label="Estatísticas do chat">
+        <span>Tarefas: <b id="statTasks">0</b></span>
+        <span>Mensagens: <b id="statMsgs">0</b></span>
+        <span id="statCharsWrap">Chars: <b id="statChars">0</b></span>
+        <span id="statTokensWrap">~Tokens: <b id="statTokens">0</b></span>
+      </div>
+
+      <div class="timeline" id="timeline" aria-label="Histórico da conversa">
+        <div class="chat-inner" id="chatContent">
+          <div class="empty" id="emptyState">
+            Sem mensagens ainda.<br>
+            Escolha um projeto e um chat na barra lateral ou crie um novo chat.
+          </div>
+        </div>
+      </div>
+
+      <footer class="composer-area">
+        <div class="composer" id="composer">
+          <textarea id="messageInput" rows="2" placeholder="Peça uma alteração, investigação ou correção no projeto..."
+            aria-label="Mensagem para o agente"></textarea>
+          <div class="compose-foot">
+            <span class="compose-hint">Enter para enviar · Shift + Enter para nova linha</span>
+            <button class="send" id="btnSend" type="button" aria-label="Enviar mensagem" title="Enviar"><svg class="i">
+                <use href="#i-send" />
+              </svg></button>
+            <button class="stop" id="btnStop" type="button" aria-label="Parar agente"><svg class="i">
+                <use href="#i-stop" />
+              </svg>Parar</button>
+          </div>
+        </div>
+      </footer>
+    </section>
+
+  </div>
+
+  <!-- Overlay de operacao (runtime) -->
+  <div id="overlay" class="overlay" style="display:none">
+    <div class="overlay-panel">
+      <div class="overlay-spinner" id="overlaySpinner">
+        <div class="pulse"></div>
+      </div>
+      <div class="overlay-title" id="overlayTitle">Aguarde…</div>
+      <div class="overlay-caption" id="overlayCaption"></div>
+      <div class="overlay-actions" id="overlayActions" style="display:none">
+        <button class="btn" id="overlayRetry" type="button">Tentar de novo</button>
+        <button class="btn" id="overlayCancel" type="button">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Menu popup do projeto -->
+  <div id="projectPopup" class="project-popup"></div>
+
+  <!-- Modal: novo projeto -->
+  <div id="modalProject" class="modal" style="display:none">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2 id="modalProjectTitle">Novo projeto</h2>
+        <p>Defina um nome e a pasta raiz do projeto.</p>
+      </div>
+      <div class="modal-body">
+        <label class="modal-label" for="projectNameInput">Nome do projeto</label>
+        <input class="modal-input" id="projectNameInput" type="text" placeholder="Ex: Loja virtual" />
+        
+        <label class="modal-label" for="projectSlugInput">Slug (nome da sessão no DeepSeek)</label>
+        <input class="modal-input" id="projectSlugInput" type="text" placeholder="ex: loja-virtual" autocomplete="off"
+          spellcheck="false" />
+        
+        <label class="modal-label" for="projectRootInput">Pasta raiz</label>
+        
+        <div style="display:flex;gap:8px">
+          <input class="modal-input" id="projectRootInput" type="text" placeholder="Clique em 'Escolher'"
+            style="flex:1" />
+          <button class="btn" id="btnPickRoot" type="button">Escolher</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="modalProjectCancel" type="button">Cancelar</button>
+        <button class="btn primary" id="modalProjectSave" type="button">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: renomear -->
+  <div id="modalRename" class="modal" style="display:none">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2 id="modalRenameTitle">Renomear</h2>
+        <p id="modalRenameCaption">Digite o novo nome.</p>
+      </div>
+      <div class="modal-body">
+        <input class="modal-input" id="renameInput" type="text" placeholder="Novo nome" />
+        <label id="renameRemoteWrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:#e8eaed; margin-top:10px; cursor:pointer;">
+          <input type="checkbox" id="renameRemote" style="width:14px; height:14px; accent-color:#457de8;" />
+          <span>Também renomear no DeepSeek (título da conversa)</span>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="modalRenameCancel" type="button">Cancelar</button>
+        <button class="btn primary" id="modalRenameSave" type="button">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: confirmar delete -->
+  <div id="modalDelete" class="modal" style="display:none">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2 id="modalDeleteTitle">Remover</h2>
+        <p id="modalDeleteCaption">Tem certeza?</p>
+      </div>
+      <div class="modal-body" id="modalDeleteBody" style="display:none">
+        <label class="allow" style="font-size:12px;color:#e8eaed;gap:8px">
+          <input type="checkbox" id="modalDeleteRemote" />
+          <span>Também apagar no DeepSeek (a conversa será perdida para sempre)</span>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="modalDeleteCancel" type="button">Cancelar</button>
+        <button class="btn danger" id="modalDeleteConfirm" type="button">Remover</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: batch RUN -->
+  <div id="runModal" class="modal" style="display:none">
+    <div class="modal-panel" style="max-width:720px">
+      <div class="modal-header">
+        <h2>O agente quer executar comandos</h2>
+        <p>Marque os que deseja executar. Rodam na ordem listada abaixo.</p>
+      </div>
+      <div class="modal-body" id="runModalList"></div>
+      <div class="modal-footer">
+        <button class="btn" id="runModalDeny" type="button">✕ Bloquear todos</button>
+        <button class="btn primary" id="runModalRun" type="button">▶ Executar selecionados (<span
+            id="runModalCount">0</span>)</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="diag-banner"></div>
+
+  <script src="./app.js" defer></script>
+</body>
+
+</html>

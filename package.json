@@ -1,0 +1,19 @@
+{
+  "name": "agente-web-deepseek",
+  "version": "0.1.0",
+  "description": "Agente de código que usa o DeepSeek web via Electron",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test:parser": "node test/parser.test.js"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0"
+  },
+  "dependencies": {
+    "@prettier/plugin-php": "^0.19.6",
+    "marked": "^7.0.5",
+    "marked-alert": "^2.1.2",
+    "prettier": "^2.8.8"
+  }
+}
