@@ -33,6 +33,12 @@ const RESUME_INSTRUCTION = [
   '- NAO emita <<<READ>>>, <<<GREP>>>, <<<EDIT>>>, <<<WRITE>>>, <<<RUN>>>, <<<SAY>>> nem nenhum outro comando agora.',
 ].join('\n');
 
+// bridge.ask() devolve { text, html }. Este helper extrai o texto,
+// aceitando tambem string (compat).
+function replyText(r) {
+  return (r && typeof r === 'object') ? String(r.text || '') : String(r || '');
+}
+
 function makeCompactError(msg, resetDone) {
   const e = new Error(msg);
   e.resetDone = !!resetDone;
@@ -92,7 +98,7 @@ async function compactSession({ chatView, sessionLog, onLog, shouldAbort }) {
     throw makeCompactError('falha ao pedir resumo: ' + e.message, false);
   }
 
-  let summary = cleanSummary(summaryReply);
+  let summary = cleanSummary(replyText(summaryReply));
 
   if (summary.length === 0) {
     log('compact: resumo vazio, abortando');
@@ -109,7 +115,7 @@ async function compactSession({ chatView, sessionLog, onLog, shouldAbort }) {
   const lineCount = summary.split('\n').length;
   log('compact: resumo obtido (' + summary.length + ' chars, ' + lineCount + ' linhas)');
 
-  // FASE 2: resetar chat
+  // FASE 2: resetar chat (UNICO resetChat permitido)
   if (abort()) throw makeCompactError('ABORTADO pelo usuario antes de resetar o chat', false);
 
   log('compact: recarregando chat');
@@ -140,23 +146,9 @@ async function compactSession({ chatView, sessionLog, onLog, shouldAbort }) {
     throw makeCompactError('falha ao injetar system prompt: ' + e.message, true);
   }
 
-  let sysClean = isCleanAck(sysAck);
+  const sysClean = isCleanAck(replyText(sysAck));
   if (!sysClean) {
-    log('compact: resposta ao system prompt nao foi limpa. Tentando resetar + reinjetar (1x).');
-    if (abort()) throw makeCompactError('ABORTADO pelo usuario durante o retry do system prompt', true);
-    try {
-      await resetChat(chatView);
-      sysAck = await ask(chatView, SYSTEM_PROMPT);
-      sysClean = isCleanAck(sysAck);
-    } catch (e) {
-      if (e && e.message === 'ABORTED_BY_USER') throw makeCompactError('ABORTED_BY_USER', true);
-      log('compact: retry do system prompt falhou (' + e.message + '). Aceitando estado atual.');
-      sysClean = false;
-    }
-  }
-
-  if (!sysClean) {
-    log('compact: AVISO: system prompt pode ter gerado comando extra. Continuando mesmo assim.');
+    log('compact: AVISO: resposta ao system prompt nao foi limpa. Continuando mesmo assim (sem retry/reset).');
   }
 
   // FASE 3b: reinjetar RESUMO
@@ -177,24 +169,9 @@ async function compactSession({ chatView, sessionLog, onLog, shouldAbort }) {
     throw makeCompactError('falha ao injetar resumo: ' + e.message, true);
   }
 
-  let resumoClean = isCleanAck(resumoAck);
+  const resumoClean = isCleanAck(replyText(resumoAck));
   if (!resumoClean) {
-    log('compact: resposta ao resumo nao foi limpa. Tentando resetar + reinjetar (1x).');
-    if (abort()) throw makeCompactError('ABORTADO pelo usuario durante o retry do resumo', true);
-    try {
-      await resetChat(chatView);
-      await ask(chatView, SYSTEM_PROMPT);
-      resumoAck = await ask(chatView, resumoMsg);
-      resumoClean = isCleanAck(resumoAck);
-    } catch (e) {
-      if (e && e.message === 'ABORTED_BY_USER') throw makeCompactError('ABORTED_BY_USER', true);
-      log('compact: retry do resumo falhou (' + e.message + '). Aceitando estado atual.');
-      resumoClean = false;
-    }
-  }
-
-  if (!resumoClean) {
-    log('compact: AVISO: resumo pode ter gerado comando extra. Continuando mesmo assim.');
+    log('compact: AVISO: resposta ao resumo nao foi limpa. Continuando mesmo assim (sem retry/reset).');
   }
 
   const newSessionLog = [

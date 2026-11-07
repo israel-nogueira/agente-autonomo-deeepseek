@@ -235,6 +235,7 @@ async function runAgent(opts) {
   const confirmRunBatch = opts.confirmRunBatch;
   const runAllowlist = opts.runAllowlist;
   const onAlwaysAllow = opts.onAlwaysAllow;
+  const onFirstReply = opts.onFirstReply || async function () {};
   const log = function (msg) { onLog(msg); };
 
   log('runAgent iniciado, task=' + (task ? task.slice(0, 80) : '(vazio)'));
@@ -292,6 +293,10 @@ async function runAgent(opts) {
   }
   turnLog.push({ role: 'assistant', content: reply, chars: reply.length });
   onTurn(turnLog);
+
+  // Primeira resposta ja chegou: notifica para o main trocar o placeholder
+  // pelo UUID real e disparar o rename remoto o QUANTO ANTES.
+  try { await onFirstReply(); } catch (e) { log('onFirstReply falhou: ' + e.message); }
 
   // Se o HTML nao veio, usa o texto (fallback).
   if (!replyHtml) replyHtml = reply;
@@ -453,7 +458,7 @@ async function runAgent(opts) {
           return {
             cmd: 'GRAVAR: ' + relPath,
             danger: (info && info.reason) ? info.reason : 'path sensivel',
-            kind: c.type, // 'write' | 'edit'
+            kind: c.type,
             path: relPath,
             sensitive: true,
           };
@@ -582,7 +587,7 @@ async function runAgent(opts) {
 
         const hasError = results.some(function (r) { return !r.ok; });
 
-        // ITEM 11 (achado 1): negações de WRITE/EDIT sensivel NAO contam
+        // ITEM 11 (achado 1): negacoes de WRITE/EDIT sensivel NAO contam
         // como falha de EDIT para os limites por arquivo/total.
         const failedEdits = results.filter(function (r) {
           if (r && r.denied === true) return false;

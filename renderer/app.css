@@ -199,13 +199,7 @@ button{cursor:pointer}
 .activity{margin-left:41px}
 
 /* Botao "Pedir revisao" */
-.review-btn-wrap{
-  margin-top:10px;
-  display:flex;
-  flex-wrap:wrap;
-  gap:8px;
-  align-items:center;
-}
+
 .review-btn{
   display:inline-flex;
   align-items:center;
@@ -222,9 +216,33 @@ button{cursor:pointer}
 }
 .review-btn:hover{background:#5b4822;border-color:#a07830;color:#fff}
 .review-btn:disabled{opacity:.5;cursor:not-allowed}
+.review-btn-wrap{
+  margin-top:10px;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px 14px;
+  padding:10px 12px;
+  background:#141c28;
+  border:1px solid #2a374a;
+  border-radius:10px;
+  max-width:100%;
+  box-sizing:border-box;
+}
 .review-files{
+  order:-1;
+  flex:1 1 220px;
+  min-width:0;
   font:10px/1.6 var(--mono);
   color:#8b9bb0;
+  overflow-wrap:anywhere;
+}
+.review-btn-wrap .review-btn{
+  order:1;
+  flex:0 0 auto;
+  margin-left:auto;
+  white-space:nowrap;
 }
 
 .event-card{background:#141c28;border:1px solid #2a374a;border-radius:10px;overflow:hidden}

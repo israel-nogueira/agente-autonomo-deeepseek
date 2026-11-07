@@ -268,23 +268,25 @@ function filterRealUuids(chats) {
 }
 
 // ============================================================
-// Label automatico: "Projeto X - N"
+// Label automatico: "<slug>_NN" (01, 02, 03, ...)
 // ============================================================
 function nextSessionLabel(projectId) {
   const p = projects.getProject(projectId);
-  if (!p) return 'Nova sessão - 0';
-  const prefix = (p.slug || slugifyName(p.name)) + ' - ';
-  const nums = p.chats
-    .map(function (c) {
-      if (typeof c.label !== 'string') return -1;
-      if (c.label.indexOf(prefix) !== 0) return -1;
-      const rest = c.label.slice(prefix.length);
-      const n = parseInt(rest, 10);
-      return Number.isFinite(n) ? n : -1;
-    })
-    .filter(function (n) { return n >= 0; });
-  const next = nums.length > 0 ? Math.max.apply(null, nums) + 1 : 0;
-  return prefix + next;
+  if (!p) return 'sessao_01';
+  const prefix = (p.slug || slugifyName(p.name)) + '_';
+  // Escapa o prefix para uso em regex.
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('^' + escaped + '(\\d+)$');
+  let maxN = 0;
+  for (const c of p.chats) {
+    if (!c || typeof c.label !== 'string') continue;
+    const m = c.label.match(re);
+    if (!m) continue;
+    const n = parseInt(m[1], 10);
+    if (Number.isFinite(n) && n > maxN) maxN = n;
+  }
+  const next = maxN + 1;
+  return prefix + String(next).padStart(2, '0');
 }
 
 function slugifyName(s) {
@@ -333,6 +335,8 @@ function createAgentWindow() {
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   attachStateSaver(win);
+  // debug: mantido enquanto voce esta desenvolvendo
+  win.webContents.openDevTools({ mode: 'detach' });
 
   // ITEM 8: bloquear navegacao e novas janelas da janela principal.
   // - novas janelas: sempre deny; http/https abrem no navegador externo.
@@ -425,6 +429,8 @@ function createChatWindow() {
   });
 
   attachStateSaver(chatWindow);
+  // debug: mantido enquanto voce esta desenvolvendo
+  chatWindow.webContents.openDevTools({ mode: 'detach' });
 
   chatWindow.on('closed', () => {
     chatWindow = null;
@@ -653,10 +659,11 @@ async function renameChatRemote(uuid, title) {
         var text = await r.text();
         var json = null;
         try { json = JSON.parse(text); } catch (e) {}
-        var ok = r.ok && json && (json.code === 0 || json.code === undefined);
+        var bizOk = !(json && json.data && json.data.biz_code !== undefined && json.data.biz_code !== 0);
+        var ok = r.ok && json && (json.code === 0 || json.code === undefined) && bizOk;
         var needsLogin = (r.status === 401 || r.status === 403) ||
                          !!(json && json.code === 40003);
-        return { ok: !!ok, status: r.status, text: text.slice(0, 300), needsLogin: needsLogin };
+        return { ok: !!ok, status: r.status, text: text.slice(0, 600), needsLogin: needsLogin };
       } catch (e) {
         return { ok: false, error: e.message };
       }
@@ -741,6 +748,10 @@ ipcMain.handle('dialog:pickFolder', async () => {
 
 // ============================================================
 // IPC — projetos e chats
+//
+// CORRIGIDO: valida tipos basicos (string nao-vazia) antes de chamar
+// projects.*. Sem isso, um XSS no renderer poderia chamar
+// projectsAPI.delete(undefined, false) e causar exception obscura.
 // ============================================================
 function isNonEmptyString(x) { return typeof x === 'string' && x.length > 0; }
 
@@ -1055,6 +1066,66 @@ ipcMain.handle('agent:abort', async () => {
 });
 
 // ============================================================
+// syncPendingChat — troca placeholder por UUID real + rename remoto
+//
+// Chamado no onFirstReply (logo apos a primeira resposta) e como
+// fallback no fim do run e no fim do compact (quando ph foi criado).
+// Idempotente: se ja foi trocado, uuid === activeChatUuid e a funcao
+// retorna sem fazer nada.
+// ============================================================
+async function syncPendingChat(sendLog) {
+  const wasPending = typeof activeChatUuid === 'string' && activeChatUuid.indexOf('pending-') === 0;
+  try {
+    const currentUrl = chatWindow.webContents.getURL();
+    const uuid = projects.extractChatIdFromUrl(currentUrl);
+    if (uuid && uuid !== activeChatUuid) {
+      if (wasPending) {
+        const existing = projects.getChat(activeProjectId, uuid);
+        const pendingChat = projects.getChat(activeProjectId, activeChatUuid);
+        const pendingLabel = (pendingChat && pendingChat.label) ? pendingChat.label : null;
+        const label = existing ? existing.label : (pendingLabel || nextSessionLabel(activeProjectId));
+        projects.replaceChat(activeProjectId, activeChatUuid, uuid, currentUrl, label);
+        activeChatUuid = uuid;
+        sendLog('[main] placeholder substituido por chat real: ' + uuid);
+        try { persistActiveChatState(); } catch (e) {}
+
+        const realChat = projects.getChat(activeProjectId, activeChatUuid);
+        if (realChat && realChat.label) {
+          try {
+            const rr = await renameChatRemote(activeChatUuid, realChat.label);
+            sendLog('[main] rename remoto RAW: status=' + (rr && rr.status) + ' body=' + (rr && (rr.text || rr.error)));
+            notifyProjectsChanged();
+            if (rr && rr.ok) {
+              sendLog('[main] rename remoto OK: ' + realChat.label);
+              try {
+                if (chatReady()) {
+                  await chatWindow.webContents.reload();
+                  await waitChatReady(chatWindow, NAVIGATION_TIMEOUT_MS);
+                  sendLog('[main] chat recarregado para atualizar o titulo');
+                }
+              } catch (e) {
+                sendLog('[main] reload apos rename falhou: ' + e.message);
+              }
+            } else {
+              sendLog('[main] rename remoto FALHOU: ' + (rr && (rr.text || rr.error) || 'erro'));
+            }
+          } catch (e) {
+            sendLog('[main] rename remoto excecao: ' + e.message);
+          }
+        }
+        notifyProjectsChanged();
+      } else {
+        const existing = projects.getChat(activeProjectId, uuid);
+        const label = existing ? existing.label : projects.uuidShort(uuid);
+        const chat = projects.addChat(activeProjectId, uuid, currentUrl, label);
+        activeChatUuid = chat.uuid;
+        notifyProjectsChanged();
+      }
+    }
+  } catch (e) { /* ignora */ }
+}
+
+// ============================================================
 // RUN
 // ============================================================
 ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
@@ -1111,6 +1182,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
       confirmRunBatch: confirmRunBatch,
       runAllowlist: runAllowlist,
       onAlwaysAllow: addToRunAllowlist,
+      onFirstReply: function () { return syncPendingChat(sendLog); },
     });
 
     if (win && !win.isDestroyed()) win.webContents.focus();
@@ -1123,36 +1195,9 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
 
     tasksCount++;
 
-    // Substitui placeholder por UUID real + rename remoto automatico
-    try {
-      const currentUrl = chatWindow.webContents.getURL();
-      const uuid = projects.extractChatIdFromUrl(currentUrl);
-      if (uuid && uuid !== activeChatUuid) {
-        if (wasPending) {
-          const existing = projects.getChat(activeProjectId, uuid);
-          const label = existing ? existing.label : nextSessionLabel(activeProjectId);
-          projects.replaceChat(activeProjectId, activeChatUuid, uuid, currentUrl, label);
-          activeChatUuid = uuid;
-          sendLog('[main] placeholder substituido por chat real: ' + uuid);
-
-          const realChat = projects.getChat(activeProjectId, activeChatUuid);
-          if (realChat && realChat.label) {
-            try {
-              const rr = await renameChatRemote(activeChatUuid, realChat.label);
-              if (rr && rr.ok) sendLog('[main] rename remoto OK: ' + realChat.label);
-              else sendLog('[main] rename remoto FALHOU: ' + (rr && (rr.text || rr.error) || 'erro'));
-            } catch (e) {
-              sendLog('[main] rename remoto excecao: ' + e.message);
-            }
-          }
-        } else {
-          const existing = projects.getChat(activeProjectId, uuid);
-          const label = existing ? existing.label : projects.uuidShort(uuid);
-          const chat = projects.addChat(activeProjectId, uuid, currentUrl, label);
-          activeChatUuid = chat.uuid;
-        }
-      }
-    } catch (e) {}
+    // Fallback: se o onFirstReply nao conseguiu trocar (ex.: URL ainda nao
+    // tinha o uuid), tenta de novo aqui. Idempotente.
+    await syncPendingChat(sendLog);
 
     persistActiveChatState();
     persistRunAllowlist();
@@ -1253,6 +1298,7 @@ ipcMain.handle('agent:compact', async (event) => {
               sessionLog: sessionLog, tasksCount: 0, lastSummary: lastSummary,
             });
           } catch (e) {}
+          await syncPendingChat(sendLog);
         } else {
           sendLog('[main] compact: chat resetado mas nao foi possivel criar placeholder');
           activeChatUuid = null;

@@ -489,6 +489,68 @@ async function clickSendButton(chatView) {
   return true;
 }
 
+// Le o estado do botao de enviar (mesma busca de candidatos que
+// clickSendButton: primario/type=submit, visivel, mais proximo do canto
+// superior direito do textarea). NAO altera clickSendButton.
+// Devolve 'ENABLED' | 'DISABLED' | 'NOT_FOUND'.
+async function getSendButtonState(chatView) {
+  if (!chatView || !chatView.webContents || chatView.webContents.isDestroyed()) {
+    return 'NOT_FOUND';
+  }
+  try {
+    const st = await chatView.webContents.executeJavaScript(
+      "(function() {" +
+        "var textarea = document.querySelector(" + JSON.stringify(SEL.input) + ");" +
+        "if (!textarea) return 'NOT_FOUND';" +
+        "var taRect = textarea.getBoundingClientRect();" +
+        "var buttons = Array.from(document.querySelectorAll('[role=\"button\"], button')).filter(function(b) { return b.offsetParent !== null; });" +
+        "var candidates = [];" +
+        "for (var i = 0; i < buttons.length; i++) {" +
+          "var b = buttons[i];" +
+          "var cls = (b.className || '').toString();" +
+          "var isPrimary = cls.indexOf('ds-button--primary') !== -1 || b.type === 'submit';" +
+          "if (!isPrimary) continue;" +
+          "var r = b.getBoundingClientRect();" +
+          "if (r.width <= 0 || r.height <= 0) continue;" +
+          "candidates.push({ el: b, x: r.x + r.width / 2, y: r.y + r.height / 2, dist: Math.abs(r.y - taRect.y) + Math.abs(r.x - taRect.right) });" +
+        "}" +
+        "if (candidates.length === 0) return 'NOT_FOUND';" +
+        "candidates.sort(function(a, b) { return a.dist - b.dist; });" +
+        "var best = candidates[0].el;" +
+        "var clsBest = (best.className || '').toString().toLowerCase();" +
+        "var pe = '';" +
+        "try { pe = (window.getComputedStyle(best).pointerEvents || '') + ''; } catch (e) { pe = ''; }" +
+        "var isDisabled = (best.disabled === true) ||" +
+                          "(best.getAttribute('aria-disabled') === 'true') ||" +
+                          "(clsBest.indexOf('disabled') !== -1) ||" +
+                          "(pe.toLowerCase() === 'none');" +
+        "return isDisabled ? 'DISABLED' : 'ENABLED';" +
+      "})()"
+    );
+    if (st === 'ENABLED' || st === 'DISABLED' || st === 'NOT_FOUND') return st;
+    return 'NOT_FOUND';
+  } catch (e) {
+    return 'NOT_FOUND';
+  }
+}
+
+// Espera o botao de enviar ficar habilitado (uploads de anexo podem
+// demorar). Sem timeout fixo de UPLOAD — o maxMs e' so um teto de
+// seguranca para nao travar o app para sempre.
+async function waitSendButtonEnabled(chatView, maxMs) {
+  maxMs = maxMs || 15 * 60 * 1000;
+  const t0 = Date.now();
+  let last = null;
+  while (Date.now() - t0 < maxMs) {
+    if (currentAbortRequested) throw new Error('ABORTED_BY_USER');
+    const st = await getSendButtonState(chatView);
+    if (st !== last) { console.log('[bridge] botao enviar: ' + st); last = st; }
+    if (st !== 'DISABLED') return st;
+    await sleep(1000);
+  }
+  return 'TIMEOUT';
+}
+
 async function isStopVisible(chatView) {
   try {
     return await chatView.webContents.executeJavaScript(
@@ -532,6 +594,8 @@ async function sendPrompt(chatView, prompt) {
   await sleep(randomBetween(300, 800));
   await injectText(chatView, prompt);
   await sleep(randomBetween(800, 1500));
+  await waitSendButtonEnabled(chatView);
+  await sleep(500);
 
   const cdpOk = await cdpPressEnter(chatView);
   if (cdpOk) {
@@ -562,6 +626,24 @@ async function sendPrompt(chatView, prompt) {
 
   if (!stopVisible && afterLen > 10) {
     await clickSendButton(chatView);
+    await sleep(1500);
+    afterLen = await getInputLength(chatView);
+    stopVisible = await isStopVisible(chatView);
+  }
+
+  const SEND_RETRY_MAX_MS = 90000;
+  const SEND_RETRY_EVERY_MS = 2500;
+  let tRetry = Date.now();
+  while (!stopVisible && afterLen > 10 && (Date.now() - tRetry) < SEND_RETRY_MAX_MS) {
+    if (currentAbortRequested) throw new Error('ABORTED_BY_USER');
+    await sleep(SEND_RETRY_EVERY_MS);
+    afterLen = await getInputLength(chatView);
+    stopVisible = await isStopVisible(chatView);
+    if (stopVisible || afterLen <= 10) break;
+    const stBtn = await getSendButtonState(chatView);
+    if (stBtn === 'DISABLED') { tRetry = Date.now(); continue; }
+    const okEnter = await cdpPressEnter(chatView);
+    if (!okEnter) { await clickSendButton(chatView); }
     await sleep(1500);
     afterLen = await getInputLength(chatView);
     stopVisible = await isStopVisible(chatView);
