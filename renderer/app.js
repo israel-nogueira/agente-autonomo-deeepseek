@@ -660,7 +660,6 @@ function isAllowedClass(cls) {
 function sanitizeHtml(html) {
   let raw = String(html || '');
   raw = raw.replace(/<br\s*\/?>/gi, '\n');
-  raw = raw.replace(/\\n/g, '\n');
   raw = raw.replace(/~~([\s\S]*?)~~/g, '<del>$1</del>');
 
   // Remove TODOS os <span>...</span> do DeepSeek antes de parsear.
@@ -745,7 +744,14 @@ function sanitizeHtml(html) {
       const name = attr.name.toLowerCase();
       if (name.startsWith('on')) { node.removeAttribute(attr.name); continue; }
       if (name === 'href') {
-        if (/^(javascript|data|vbscript):/i.test(attr.value)) node.removeAttribute(attr.name);
+        // ITEM 9: href so pode ser http:, https: ou mailto:.
+        // Le o valor DECODIFICADO via getAttribute (nao o texto cru),
+        // remove chars de controle/espace e testa. Se nao casar, remove.
+        const decoded = node.getAttribute('href') || '';
+        const clean = decoded.replace(/[\u0000-\u0020\u007f-\u009f]/g, '');
+        if (!/^(https?:|mailto:)/i.test(clean)) {
+          node.removeAttribute('href');
+        }
         continue;
       }
       if (name === 'target' || name === 'rel') continue;
@@ -1202,17 +1208,66 @@ function showRunBatchModal(items) {
 		const row = document.createElement('div');
 		row.className = 'cmd-item';
 		row.dataset.idx = i;
-		row.innerHTML =
-			'<code class="cmd">' + escapeHtml(item.cmd) + '</code>' +
-			'<label class="allow"><input type="checkbox" data-role="always" data-idx="' + i + '"> Sempre permitir</label>' +
-			'<label class="allow"><input type="checkbox" data-role="main" data-idx="' + i + '" checked> Executar</label>';
-		if (item.danger) {
-			const d = document.createElement('div');
-			d.className = 'run-item-danger-badge';
-			d.style.cssText = 'display:inline-block;margin-top:6px;padding:2px 8px;background:#7f1d1d;color:#fecaca;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase';
-			d.textContent = '⚠ PERIGOSO: ' + item.danger;
-			row.appendChild(d);
+
+		// ITEM 11: WRITE/EDIT sensivel entra no mesmo modal do RUN, mas com
+		// rotulo diferente e SEM checkbox "Sempre permitir". O path vai via
+		// textContent (nunca innerHTML).
+		const isSensitiveWrite = (item.kind === 'write' || item.kind === 'edit') && item.sensitive === true;
+
+		const code = document.createElement('code');
+		code.className = 'cmd';
+		code.textContent = isSensitiveWrite
+			? ('GRAVAR: ' + (item.path || item.cmd || ''))
+			: String(item.cmd || '');
+		row.appendChild(code);
+
+		if (isSensitiveWrite) {
+			const reason = document.createElement('div');
+			reason.style.cssText = 'display:inline-block;margin-top:6px;padding:2px 8px;background:#3c2a12;color:#fcd9a3;border:1px solid #6a5735;border-radius:4px;font-size:10px;font-weight:600';
+			reason.textContent = '⚠ ARQUIVO SENSÍVEL' + (item.danger ? ': ' + item.danger : '');
+			row.appendChild(reason);
+
+			const mainLabel = document.createElement('label');
+			mainLabel.className = 'allow';
+			const mainCb = document.createElement('input');
+			mainCb.type = 'checkbox';
+			mainCb.setAttribute('data-role', 'main');
+			mainCb.setAttribute('data-idx', String(i));
+			mainCb.checked = true;
+			mainLabel.appendChild(mainCb);
+			mainLabel.appendChild(document.createTextNode(' Gravar'));
+			row.appendChild(mainLabel);
+		} else {
+			const alwaysLabel = document.createElement('label');
+			alwaysLabel.className = 'allow';
+			const alwaysCb = document.createElement('input');
+			alwaysCb.type = 'checkbox';
+			alwaysCb.setAttribute('data-role', 'always');
+			alwaysCb.setAttribute('data-idx', String(i));
+			alwaysLabel.appendChild(alwaysCb);
+			alwaysLabel.appendChild(document.createTextNode(' Sempre permitir'));
+			row.appendChild(alwaysLabel);
+
+			const mainLabel2 = document.createElement('label');
+			mainLabel2.className = 'allow';
+			const mainCb2 = document.createElement('input');
+			mainCb2.type = 'checkbox';
+			mainCb2.setAttribute('data-role', 'main');
+			mainCb2.setAttribute('data-idx', String(i));
+			mainCb2.checked = true;
+			mainLabel2.appendChild(mainCb2);
+			mainLabel2.appendChild(document.createTextNode(' Executar'));
+			row.appendChild(mainLabel2);
+
+			if (item.danger) {
+				const d = document.createElement('div');
+				d.className = 'run-item-danger-badge';
+				d.style.cssText = 'display:inline-block;margin-top:6px;padding:2px 8px;background:#7f1d1d;color:#fecaca;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase';
+				d.textContent = '⚠ PERIGOSO: ' + item.danger;
+				row.appendChild(d);
+			}
 		}
+
 		list.appendChild(row);
 	});
 	updateRunBatchCount();
@@ -1236,6 +1291,10 @@ $('runModalRun').addEventListener('click', () => {
 		if (cb.checked) {
 			const idx = parseInt(cb.dataset.idx, 10);
 			approved.push(idx);
+			// ITEM 11: "Sempre permitir" nunca e' coletado para item sensivel
+			// (o main.js tambem filtra como defesa em profundidade).
+			const it = pendingRunBatch.items[idx];
+			if (it && it.sensitive === true) return;
 			const a = document.querySelector('#runModalList input[data-role="always"][data-idx="' + idx + '"]');
 			if (a && a.checked) always.push(idx);
 		}

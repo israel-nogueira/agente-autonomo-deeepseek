@@ -2,9 +2,9 @@
 //
 // Gerenciador de projetos e chats.
 // Persiste em <userData>/projects.json (escrita atomica .tmp + rename,
-// com backup .bak). Todo dado "de projeto" (nome, pasta, runAllowlist)
-// vive no projeto; todo dado "de conversa" (sessionLog, tasksCount,
-// lastSummary) vive no chat.
+// com backup .bak). Todo dado "de projeto" (nome, pasta, runAllowlist,
+// runAllowlistTs) vive no projeto; todo dado "de conversa" (sessionLog,
+// tasksCount, lastSummary) vive no chat.
 //
 // Este modulo NAO depende de Electron: recebe o diretorio userData em init().
 //
@@ -21,6 +21,7 @@
 //     id, name, projectRoot, createdAt,
 //     activeChatUuid: string|null,
 //     runAllowlist: string[],
+//     runAllowlistTs: Record<string, number>,
 //     chats: Chat[]
 //   }
 
@@ -123,6 +124,7 @@ function makeEmptyProject(name, projectRoot, slug) {
     createdAt: nowMs(),
     activeChatUuid: null,
     runAllowlist: [],
+    runAllowlistTs: {},
     chats: [],
   };
 }
@@ -191,6 +193,15 @@ function sanitizeProject(raw) {
   if (typeof raw.activeChatUuid === 'string') p.activeChatUuid = raw.activeChatUuid;
   if (Array.isArray(raw.runAllowlist)) {
     p.runAllowlist = raw.runAllowlist.filter(function (x) { return typeof x === 'string'; });
+  }
+  // runAllowlistTs: fallback {} para dados antigos sem o campo.
+  if (raw.runAllowlistTs && typeof raw.runAllowlistTs === 'object' && !Array.isArray(raw.runAllowlistTs)) {
+    const ts = {};
+    for (const k of Object.keys(raw.runAllowlistTs)) {
+      const v = raw.runAllowlistTs[k];
+      if (typeof k === 'string' && typeof v === 'number' && Number.isFinite(v)) ts[k] = v;
+    }
+    p.runAllowlistTs = ts;
   }
   if (Array.isArray(raw.chats)) {
     p.chats = raw.chats.map(sanitizeChat).filter(Boolean);
@@ -466,16 +477,18 @@ function deleteChat(projectId, uuid) {
   return { removed: true, activeChatUuid: p.activeChatUuid };
 }
 
+// ITEM 18: cada entrada e' gravada com content '' e o chars preservado
+// (usa o chars existente se vier; senao String(content).length). O
+// content continua vivo em memoria ate o momento de persistir.
 function updateChatState(projectId, uuid, state) {
   const c = getChat(projectId, uuid);
   if (!c) return null;
   if (state && Array.isArray(state.sessionLog)) {
     c.sessionLog = state.sessionLog.map(function (m) {
-      return {
-        role: String(m.role || ''),
-        content: String(m.content || ''),
-        chars: typeof m.chars === 'number' ? m.chars : String(m.content || '').length,
-      };
+      const role = String(m.role || '');
+      const content = String(m.content || '');
+      const chars = (typeof m.chars === 'number') ? m.chars : content.length;
+      return { role: role, content: '', chars: chars };
     });
   }
   if (state && typeof state.tasksCount === 'number') c.tasksCount = state.tasksCount;
@@ -500,6 +513,27 @@ function setRunAllowlist(projectId, arr) {
   });
   scheduleSave();
   return p.runAllowlist;
+}
+
+function getRunAllowlistTs(projectId) {
+  const p = getProject(projectId);
+  if (!p) return {};
+  return Object.assign({}, p.runAllowlistTs);
+}
+
+function setRunAllowlistTs(projectId, obj) {
+  const p = getProject(projectId);
+  if (!p) throw new Error('projeto inexistente');
+  const src = (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : {};
+  const out = {};
+  for (const k of Object.keys(src)) {
+    if (typeof k !== 'string' || !k) continue;
+    const v = src[k];
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+  }
+  p.runAllowlistTs = out;
+  scheduleSave();
+  return p.runAllowlistTs;
 }
 
 // ============================================================
@@ -536,6 +570,8 @@ module.exports = {
 
   getRunAllowlist,
   setRunAllowlist,
+  getRunAllowlistTs,
+  setRunAllowlistTs,
 
   extractChatIdFromUrl,
   getChatUrl,

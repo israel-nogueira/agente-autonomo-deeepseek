@@ -1,0 +1,15 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "GIT DIFF -> clipboard",
+            "type": "shell",
+            "command": "$d = git diff --ignore-cr-at-eol -- '${relativeFile}'; Add-Type -AssemblyName System.Windows.Forms; $n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; if ($d) { $d | clip; $n.ShowBalloonTip(3000, 'Diff COPIADO', '${fileBasename}', 'Info') } else { $n.ShowBalloonTip(3000, 'Diff VAZIO', '${fileBasename}', 'Warning') }; Start-Sleep -Seconds 3; $n.Dispose()",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "silent",
+                "close": true
+            }
+        }
+    ]
+}

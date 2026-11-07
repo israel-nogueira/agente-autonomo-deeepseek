@@ -7,7 +7,6 @@
 //   - injectText via setter.call (sem clipboard: DeepSeek transformava em anexo)
 //   - click/Enter/abort via CDP
 //   - attachFile usa <input type="file"> do DeepSeek
-//   - SSE mantido mas desligado (USE_SSE=false)
 
 const SEL = {
   input: 'textarea[placeholder*="Mensagem para DeepSeek" i], textarea[placeholder*="Mensagem" i], textarea[placeholder*="DeepSeek" i], textarea[placeholder*="message" i], textarea, div[contenteditable="true"]',
@@ -16,8 +15,6 @@ const SEL = {
   newChatBtn: 'a[href="/"], button[aria-label*="novo chat" i], button[aria-label*="new chat" i], button[title*="novo chat" i], button[title*="new chat" i], div[role="button"][aria-label*="novo chat" i], div[role="button"][aria-label*="new chat" i]',
   fileInput: 'input[type="file"]',
 };
-
-const USE_SSE = false;
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
@@ -28,7 +25,7 @@ function randomBetween(min, max) {
 }
 
 // ============================================================
-// Helpers novos: decodificar entidades + limpar wrappers
+// Helpers: decodificar entidades + limpar wrappers
 // do DeepSeek + remover comandos <<<...>>> de um HTML.
 // ============================================================
 
@@ -91,31 +88,13 @@ function prepareHtmlForChat(html) {
 }
 
 // ============================================================
-// SSE (mantido; USE_SSE=false)
+// Abort
 // ============================================================
-let sseCapture = null;
-const SSE_INITIALIZED = new WeakSet();
-const SSE_NO_EVENTS_MS = 30 * 1000;
-const SSE_TOTAL_MS = 90 * 1000;
-const SSE_MAX_CONTINUES = 6;
-const SSE_MAX_FAILURES = 3;
-let sseFailureCount = 0;
-let sseDisabled = false;
-
 const MAX_CONTINUE_CLICKS = 30;
 
 let currentAbortRequested = false;
 
 function resetAbortFlag() { currentAbortRequested = false; }
-function resetSseState() { sseDisabled = false; sseFailureCount = 0; }
-
-function abortSse(reason) {
-  if (!sseCapture) return false;
-  const c = sseCapture;
-  const text = extractResponseText(c.state);
-  c.finish({ text, html: '', finished: false, autoContinue: false, reason: reason || 'aborted' });
-  return true;
-}
 
 function requestAbort(chatView) {
   currentAbortRequested = true;
@@ -125,178 +104,6 @@ function requestAbort(chatView) {
       if (p && typeof p.catch === 'function') p.catch(() => {});
     } catch (e) { /* ignora */ }
   }
-  abortSse('user_abort');
-}
-
-async function ensureDebugger(chatView) {
-  const wc = chatView.webContents;
-  if (sseDisabled) return false;
-  if (SSE_INITIALIZED.has(wc)) return wc.debugger.isAttached();
-  try { wc.debugger.attach('1.3'); } catch (e) {
-    if (!e.message.includes('already attached')) { sseDisabled = true; return false; }
-  }
-  try { await wc.debugger.sendCommand('Network.enable'); } catch (e) {
-    try { wc.debugger.detach(); } catch (_) {}
-    sseDisabled = true;
-    return false;
-  }
-  wc.debugger.on('message', (event, method, params) => {
-    if (method === 'Network.eventSourceMessageReceived') handleSseEvent(params);
-  });
-  SSE_INITIALIZED.add(wc);
-  return true;
-}
-
-function handleSseEvent(params) {
-  if (!sseCapture) return;
-  if (sseCapture.markEvent) sseCapture.markEvent();
-  if (params.eventName === 'close') { finishCapture('close_event'); return; }
-  let data;
-  try { data = JSON.parse(params.data); } catch (e) { return; }
-  if (data.v && typeof data.v === 'object' && data.v.response) {
-    if (sseCapture.requestId && sseCapture.requestId !== params.requestId) return;
-    sseCapture.requestId = params.requestId;
-    sseCapture.state.response = data.v.response;
-    sseCapture.state.response.fragments = sseCapture.state.response.fragments || [];
-    checkFinished();
-    return;
-  }
-  if (!sseCapture.state.response) {
-    if (data.p) {
-      sseCapture.state.response = { fragments: [] };
-      try { applyPath(sseCapture.state, data.p, data.o || 'SET', data.v); } catch (e) {}
-      checkFinished();
-    }
-    return;
-  }
-  if (data.p === undefined && typeof data.v === 'string') {
-    const frags = sseCapture.state.response.fragments;
-    if (frags.length > 0) {
-      const last = frags[frags.length - 1];
-      last.content = (last.content || '') + data.v;
-    }
-    return;
-  }
-  if (data.p) {
-    try { applyPath(sseCapture.state, data.p, data.o || 'SET', data.v); } catch (e) {}
-    checkFinished();
-  }
-}
-
-function applyPath(state, path, op, value) {
-  let parts = path.split('/');
-  if (parts[0] === 'response') parts = parts.slice(1);
-  if (parts.length === 0) {
-    if (op === 'BATCH' && Array.isArray(value)) {
-      for (const item of value) if (item.p) applyPath(state, 'response/' + item.p, item.o || 'SET', item.v);
-    }
-    return;
-  }
-  let cur = state.response;
-  for (let i = 0; i < parts.length - 1; i++) {
-    let key = parts[i];
-    if (key === '-1') key = Array.isArray(cur) ? cur.length - 1 : Object.keys(cur).length - 1;
-    if (cur[key] === undefined || cur[key] === null) cur[key] = {};
-    cur = cur[key];
-  }
-  let lastKey = parts[parts.length - 1];
-  if (lastKey === '-1') lastKey = Array.isArray(cur) ? cur.length - 1 : Object.keys(cur).length - 1;
-  if (op === 'APPEND') {
-    if (typeof value === 'string') cur[lastKey] = (cur[lastKey] || '') + value;
-    else if (Array.isArray(value)) {
-      if (!Array.isArray(cur[lastKey])) cur[lastKey] = [];
-      for (const item of value) cur[lastKey].push(item);
-    }
-  } else if (op === 'SET') cur[lastKey] = value;
-  else if (op === 'BATCH' && Array.isArray(value)) {
-    for (const item of value) if (item.p) applyPath(state, 'response/' + item.p, item.o || 'SET', item.v);
-  }
-}
-
-function checkFinished() {
-  if (!sseCapture || !sseCapture.state.response) return;
-  const r = sseCapture.state.response;
-  if (r.status === 'FINISHED' || r.quasi_status === 'FINISHED') finishCapture('finished');
-}
-
-function finishCapture(reason) {
-  if (!sseCapture) return;
-  const c = sseCapture;
-  const text = extractResponseText(c.state);
-  const autoContinue = !!(c.state.response && c.state.response.auto_continue);
-  c.finish({ text, html: text, finished: true, autoContinue, reason });
-}
-
-function extractResponseText(state) {
-  if (!state || !state.response || !Array.isArray(state.response.fragments)) return '';
-  return state.response.fragments.filter(f => f && f.type === 'RESPONSE').map(f => f.content || '').join('');
-}
-
-function armCapture() {
-  if (sseCapture) {
-    try { sseCapture.finish({ text: '', html: '', finished: false, autoContinue: false, reason: 'superseded' }); } catch (e) {}
-  }
-  return new Promise((resolve) => {
-    const captureId = Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-    let gotEvent = false;
-    let resolved = false;
-    const finish = (data) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(noEventTimer);
-      clearTimeout(totalTimer);
-      if (sseCapture && sseCapture.id === captureId) sseCapture = null;
-      resolve(data);
-    };
-    const noEventTimer = setTimeout(() => {
-      if (gotEvent) return;
-      const text = extractResponseText(sseCapture && sseCapture.id === captureId ? sseCapture.state : { response: null });
-      sseFailureCount++;
-      if (sseFailureCount >= SSE_MAX_FAILURES) sseDisabled = true;
-      finish({ text, html: text, finished: false, autoContinue: false, reason: 'no_events' });
-    }, SSE_NO_EVENTS_MS);
-    const totalTimer = setTimeout(() => {
-      const text = extractResponseText(sseCapture && sseCapture.id === captureId ? sseCapture.state : { response: null });
-      sseFailureCount++;
-      if (sseFailureCount >= SSE_MAX_FAILURES) sseDisabled = true;
-      finish({ text, html: text, finished: false, autoContinue: false, reason: 'timeout' });
-    }, SSE_TOTAL_MS);
-    sseCapture = { id: captureId, state: { response: null }, requestId: null, finish: finish, markEvent: () => { gotEvent = true; } };
-  });
-}
-
-async function askViaSse(chatView, prompt, onPromptSent) {
-  let allText = '';
-  let attempts = 0;
-  while (attempts < SSE_MAX_CONTINUES) {
-    if (currentAbortRequested) throw new Error('ABORTED_BY_USER');
-    attempts++;
-    const isContinuation = attempts > 1;
-    const capturePromise = armCapture();
-    try {
-      if (isContinuation) {
-        const clicked = await clickContinue(chatView);
-        if (!clicked) { abortSse('no_continue_button'); await capturePromise; break; }
-      } else {
-        await sendPrompt(chatView, prompt);
-        if (onPromptSent) onPromptSent();
-      }
-    } catch (e) {
-      abortSse('send_error');
-      try { await capturePromise; } catch (_) {}
-      throw e;
-    }
-    const result = await capturePromise;
-    allText += result.text;
-    if (currentAbortRequested || result.reason === 'user_abort') throw new Error('ABORTED_BY_USER');
-    if (!result.finished) {
-      if (result.text && result.text.length > 0) return { text: allText, html: allText };
-      throw new Error('SSE: ' + (result.reason || 'sem texto'));
-    }
-    if (!result.autoContinue) return { text: allText, html: allText };
-    await sleep(400);
-  }
-  return { text: allText, html: allText };
 }
 
 // ============================================================
@@ -776,8 +583,9 @@ async function sendPrompt(chatView, prompt) {
 // ============================================================
 // waitForReply — devolve { text, html }
 // ============================================================
-async function waitForReply(chatView, timeoutMs, beforeCount) {
+async function waitForReply(chatView, timeoutMs, beforeCount, beforeText) {
   timeoutMs = timeoutMs || 240000;
+  if (typeof beforeText !== 'string') beforeText = '';
   const t0 = Date.now();
 
   let sawAssistant = false;
@@ -786,10 +594,19 @@ async function waitForReply(chatView, timeoutMs, beforeCount) {
   while (Date.now() - t0 < timeoutMs) {
     if (currentAbortRequested) throw new Error('ABORTED_BY_USER');
     try {
-      const hasAssistant = await chatView.webContents.executeJavaScript(
-        "document.querySelectorAll(" + JSON.stringify(SEL.assistantMsg) + ").length > 0"
+      const probe = await chatView.webContents.executeJavaScript(
+        "(function() {" +
+          "var msgs = document.querySelectorAll(" + JSON.stringify(SEL.assistantMsg) + ");" +
+          "var count = msgs.length;" +
+          "var lastText = count > 0 ? (msgs[count - 1].innerText || '') : '';" +
+          "return { count: count, lastText: lastText };" +
+        "})()"
       );
-      if (hasAssistant) { sawAssistant = true; break; }
+      const count = (probe && typeof probe.count === 'number') ? probe.count : 0;
+      const lastText = (probe && typeof probe.lastText === 'string') ? probe.lastText : '';
+      const isNew = (count > (typeof beforeCount === 'number' ? beforeCount : 0)) ||
+                    (count > 0 && lastText.length > 0 && lastText !== beforeText);
+      if (isNew) { sawAssistant = true; break; }
     } catch (e) { /* ignora */ }
     await sleep(400);
   }
@@ -901,35 +718,24 @@ async function getLastReply(chatView, extraCountBefore) {
 async function ask(chatView, prompt) {
   if (currentAbortRequested) throw new Error('ABORTED_BY_USER');
 
-  resetSseState();
-
   let beforeCount = 0;
   try { beforeCount = await countAssistantMessages(chatView); } catch (e) {}
 
-  if (USE_SSE) {
-    let sseOk = false;
-    try { sseOk = await ensureDebugger(chatView); } catch (e) {}
-    if (sseOk) {
-      let promptSent = false;
-      try {
-        return await askViaSse(chatView, prompt, () => { promptSent = true; });
-      } catch (e) {
-        if (e && e.message === 'ABORTED_BY_USER') throw e;
-        if (promptSent) {
-          if (currentAbortRequested) throw new Error('ABORTED_BY_USER');
-          const r = await waitForReply(chatView, 240000, beforeCount);
-          // waitForReply ja devolve { text, html }; o getLastReply e' redundante
-          // mas mantemos pra consistencia.
-          const lr = await getLastReply(chatView, beforeCount);
-          return { text: r.text || lr.text, html: r.html || lr.html };
-        }
-      }
-    }
-  }
+  let beforeText = '';
+  try {
+    beforeText = await chatView.webContents.executeJavaScript(
+      "(function() {" +
+        "var msgs = document.querySelectorAll(" + JSON.stringify(SEL.assistantMsg) + ");" +
+        "if (msgs.length === 0) return '';" +
+        "return msgs[msgs.length - 1].innerText || '';" +
+      "})()"
+    );
+    if (typeof beforeText !== 'string') beforeText = '';
+  } catch (e) { beforeText = ''; }
 
   try {
     await sendPrompt(chatView, prompt);
-    const r = await waitForReply(chatView, 240000, beforeCount);
+    const r = await waitForReply(chatView, 240000, beforeCount, beforeText);
     const lr = await getLastReply(chatView, beforeCount);
     return { text: r.text || lr.text, html: r.html || lr.html };
   } catch (e) {
@@ -1044,7 +850,7 @@ const DISABLE_FEATURES_JS = `
   function tryClick(el) { if (!el) return false; try { el.click(); return true; } catch (e) { return false; } }
   function getPressedState(el) { return el.getAttribute('aria-pressed') === 'true'; }
   function findAndSetOff(texts) {
-    var all = Array.from(document.querySelectorAll('*')).filter(function(el) {
+    var all = Array.from(document.querySelectorAll('button, [role="button"], [role="switch"], [aria-pressed]')).filter(function(el) {
       if (el.offsetParent === null) return false;
       var t = (el.innerText || el.textContent || '').trim();
       for (var k = 0; k < texts.length; k++) { if (t.toLowerCase().indexOf(texts[k].toLowerCase()) !== -1) return true; }
@@ -1089,10 +895,8 @@ module.exports = {
   ask,
   resetChat,
   abortStreaming,
-  abortSse,
   requestAbort,
   resetAbortFlag,
-  resetSseState,
   waitChatReady,
   isStopVisible,
   isContinueVisible,

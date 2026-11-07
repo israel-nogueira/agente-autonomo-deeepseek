@@ -4,8 +4,7 @@
   "description": "Agente de código que usa o DeepSeek web via Electron",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
-    "test:parser": "node test/parser.test.js"
+    "start": "electron ."
   },
   "devDependencies": {
     "electron": "^30.0.0"

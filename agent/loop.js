@@ -2,8 +2,8 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { ask, abortStreaming, attachFile, prepareHtmlForChat } = require('./bridge');
-const { parseResponse } = require('./parser');
-const { execute, resetReadCache, checkDestructive, getFileContent } = require('./tools');
+const { parseResponse, parseReadArg } = require('./parser');
+const { execute, resetReadCache, checkDestructive, getFileContent, classifyPath } = require('./tools');
 const { buildTurn0, buildResultMessage } = require('./protocol');
 
 const MAX_TURNS = 30;
@@ -14,27 +14,78 @@ const MAX_EDIT_FAILS_TOTAL = 8;
 
 const SESSION_LOG_MAX_CHARS = 100000;
 
+// Extrai IDs de OLD_REF dos cabecalhos do msg de READ:
+//   <<<RESULT:READ:caminho:1-200 of 200 (complete) [R1]>>>
+//   <<<RESULT:READ:caminho:1-1000 of 2000 [PARTE 1/2] [R1]>>>
+// Devolve array de { id, inicio, fim } (1 ou 2 entradas).
+function extractReadRefs(msg) {
+  const out = [];
+  if (typeof msg !== 'string' || msg.length === 0) return out;
+  const headerRe = /<<<RESULT:READ:[^>]*?\[([A-Z]\d+)\]>>>/g;
+  let m;
+  while ((m = headerRe.exec(msg)) !== null) {
+    const id = m[1];
+    const seg = m[0];
+    const rangeMatch = seg.match(/^<<<RESULT:READ:[^:]+:(\d+)-(\d+) of \d+/);
+    if (rangeMatch) {
+      const inicio = parseInt(rangeMatch[1], 10);
+      const fim = parseInt(rangeMatch[2], 10);
+      if (Number.isFinite(inicio) && Number.isFinite(fim)) {
+        out.push({ id: id, inicio: inicio, fim: fim });
+        continue;
+      }
+    }
+    out.push({ id: id, inicio: null, fim: null });
+  }
+  return out;
+}
+
 async function tryAttachReadResult(chatView, projectRoot, cmd, result, log) {
   if (!result || !result.ok) return result;
 
   try {
-    const rel = cmd.arg.split(':')[0].trim();
+    const parsed = parseReadArg(cmd.arg);
+    // So anexa leitura de arquivo INTEIRO. Range ja traz ID + linhas no msg.
+    if (parsed.start !== undefined) return result;
+
+    const rel = parsed.path;
     const { content, fileName } = await getFileContent(projectRoot, rel);
     if (typeof content !== 'string' || content.length === 0) return result;
 
-    const att = await attachFile(chatView, fileName, content);
+    // IDs vieram do msg original (1 ou 2 cabecalhos em arquivos >2000 linhas).
+    const refs = extractReadRefs(result.msg);
+    if (refs.length === 0) {
+      // Fallback seguro: sem ID, nao anexa — o modelo usaria OLD_REF sem ref valida.
+      return result;
+    }
+
+    // Conteudo numerado igual ao formatRead do tools.js: NNNN|linha.
+    const lines = content.split('\n');
+    const numbered = lines.map(function (ln, i) {
+      return String(i + 1).padStart(4) + '|' + ln;
+    }).join('\n');
+
+    const att = await attachFile(chatView, fileName, numbered);
 
     if (att && att.ok) {
       const sizeKb = Math.round(content.length / 1024);
-      log('  attachFile: OK (' + fileName + ', ' + sizeKb + 'kb)');
+      log('  attachFile: OK (' + fileName + ', ' + sizeKb + 'kb, ' + refs.length + ' ref(s))');
+
+      const refLines = refs.map(function (r) {
+        return '  [' + r.id + '] linhas ' + r.inicio + '-' + r.fim;
+      }).join('\n');
+
       return {
         ok: true,
         msg: '<<<RESULT:READ:' + rel + ':ok — arquivo anexado (' + sizeKb + 'kb)>>>\n' +
-             '[O conteudo completo de ' + rel + ' esta no ANEXO desta mensagem.]\n' +
+             '[O conteudo completo de ' + rel + ' esta no ANEXO desta mensagem, numerado no formato NNNN|linha.]\n' +
+             '[Para OLD_REF use os IDs abaixo com linhas INICIO-FIM:]\n' +
+             refLines + '\n' +
              '<<<END>>>',
         attached: true,
         attachedName: fileName,
         attachedSize: content.length,
+        refs: refs,
       };
     }
     return result;
@@ -75,7 +126,7 @@ function detectRunAntipattern(cmd) {
   if (/(^|[\s;&|])(grep|rg|findstr|ag|ack)(\s|$)/i.test(c)) {
     return 'VOCE USOU grep/rg/findstr via RUN. Para BUSCAR TEXTO use:\n  <<<GREP:src/**:function handleLogin>>>\n  <<<GREP:index.html:slider>>>';
   }
-  if (/(^|[\s;&|])(find|dir\s+\/s|ls\s+-r|Get-ChildItem[^\n]*-Recurse)/i.test(c)) {
+  if (/(^|[\s;&|])(find(\s|$)|dir\s+\/s|ls\s+-r|Get-ChildItem[^\n]*-Recurse)/i.test(c)) {
     return 'VOCE USOU find/dir -Recurse via RUN. Para LISTAR ARQUIVOS use:\n  <<<GLOB:**/*.js>>>\n  <<<GLOB:src/**/*.ts>>>';
   }
   if (/^(cat|type|Get-Content)\s+\S+\s*$/i.test(c.trim())) {
@@ -93,7 +144,8 @@ function detectRunAntipattern(cmd) {
   if (/(^|[\s;&|])(Remove-Item|del\s|rm\s)(\s|$)/i.test(c)) {
     return 'VOCE USOU remocao de arquivo via RUN. Se realmente quer apagar, use RUN com cuidado. Para modificar, use <<<EDIT>>>.';
   }
-  if (/\$env:|\b(Get|Set|Remove|New|Copy|Move|Test|Start|Stop)-[A-Z]\w+|\b(Select|Where|ForEach|Sort|Group|Measure|Write|Out|Invoke)-[A-Z]\w+|\b2>\$null\b|\bWrite-Host\b/i.test(c)) {
+  if (/\$env:/i.test(c) ||
+      /\b(Get|Set|Remove|New|Copy|Move|Test|Start|Stop)-[A-Z]\w+|\b(Select|Where|ForEach|Sort|Group|Measure|Write|Out|Invoke)-[A-Z]\w+|\b2>\$null\b|\bWrite-Host\b/.test(c)) {
     return 'VOCE USOU SINTAXE POWERSHELL, mas o shell padrao e cmd.exe.';
   }
   if (/^\s*["'][^"']*[*?][^"']*["']/.test(c)) {
@@ -157,6 +209,19 @@ function truncatedCorrection(seg) {
   return '<div class="danger">Sua resposta foi TRUNCADA: faltam ' + missing + ' bloco(s) EDIT com END.</div>';
 }
 
+// Conta um EDIT truncado nas estruturas de falha (mesmo limite dos EDITs
+// com erro). Devolve { aborted: true, summary } se estourou, ou null.
+function countTruncatedEdit(truncated, editFailCounts, totalEditFails, turn) {
+  totalEditFails.count++;
+  if (totalEditFails.count >= MAX_EDIT_FAILS_TOTAL) {
+    return {
+      aborted: true,
+      summary: 'ABORTADO: ' + totalEditFails.count + ' tentativas de EDIT falharam.',
+    };
+  }
+  return null;
+}
+
 async function runAgent(opts) {
   const task = opts.task;
   const projectRoot = opts.projectRoot;
@@ -169,6 +234,7 @@ async function runAgent(opts) {
   const shouldAbort = opts.shouldAbort || function () { return false; };
   const confirmRunBatch = opts.confirmRunBatch;
   const runAllowlist = opts.runAllowlist;
+  const onAlwaysAllow = opts.onAlwaysAllow;
   const log = function (msg) { onLog(msg); };
 
   log('runAgent iniciado, task=' + (task ? task.slice(0, 80) : '(vazio)'));
@@ -202,6 +268,15 @@ async function runAgent(opts) {
 
   const turnLog = [];
 
+  // Acumula arquivos que foram efetivamente gravados nesta execucao.
+  const touchedFilesSet = new Set();
+  function recordTouched(cmd) {
+    if (!cmd) return;
+    if (cmd.type !== 'edit' && cmd.type !== 'write') return;
+    const rel = (cmd.path || '').trim();
+    if (rel) touchedFilesSet.add(rel);
+  }
+
   let reply, replyHtml;
   try {
     const r = await ask(chatView, turn0);
@@ -225,7 +300,7 @@ async function runAgent(opts) {
   let explorationStreak = 0;
 
   const editFailCounts = new Map();
-  let totalEditFails = 0;
+  const totalEditFails = { count: 0 };
 
   async function askAndLog(msg, persistent) {
     turnLog.push({ role: 'user', content: msg, chars: msg.length });
@@ -257,6 +332,16 @@ async function runAgent(opts) {
 
       const truncated = segments.find(function (s) { return s.type === 'truncated'; });
       if (truncated) {
+        // ITEM 7a: contar como tentativa de correcao quando for EDIT truncado,
+        // igual aos outros EDITs com erro. WRITE/RUN/SAY truncados NAO contam
+        // (o limite e' de EDIT).
+        if (truncated.what === 'EDIT') {
+          const exceeded = countTruncatedEdit(truncated, editFailCounts, totalEditFails, turn);
+          if (exceeded) {
+            return { turns: turn, aborted: true, summary: exceeded.summary, turnLog: turnLog };
+          }
+        }
+
         const msg = truncatedCorrection(truncated);
         const r = await askAndLog(msg, false);
         reply = r.text;
@@ -297,7 +382,28 @@ async function runAgent(opts) {
       if (hasDone && workCmds.length === 0) {
         let finalSummary = reply || '';
         finalSummary = finalSummary.replace(/<<<DONE>>>/g, '').trim();
-        return { turns: turn, summary: finalSummary, turnLog: turnLog };
+
+        const touchedFiles = Array.from(touchedFilesSet);
+        const needsReview = touchedFiles.length > 0;
+        const reviewPrompt = needsReview
+          ? ('Revise as alteracoes que voce acabou de fazer nos seguintes arquivos:\n' +
+             touchedFiles.map(function (f) { return '- ' + f; }).join('\n') +
+             '\n\nLeia cada arquivo alterado (<<<READ:caminho>>>) e verifique: ' +
+             'se a mudanca atende exatamente a tarefa original, ' +
+             'se nao quebrou a sintaxe, se nao introduziu regressao, ' +
+             'e se o estilo e a indentacao estao consistentes. ' +
+             'Corrija o que estiver errado com <<<EDIT>>>. ' +
+             'Se estiver tudo certo, emita <<<DONE>>> SOZINHO.')
+          : '';
+
+        return {
+          turns: turn,
+          summary: finalSummary,
+          turnLog: turnLog,
+          needsReview: needsReview,
+          touchedFiles: touchedFiles,
+          reviewPrompt: reviewPrompt,
+        };
       }
 
       if (workCmds.length > 0) {
@@ -320,21 +426,64 @@ async function runAgent(opts) {
           else runToConfirm.push(cmd);
         }
 
+        // ITEM 11: WRITE/EDIT em paths sensiveis entram no MESMO lote do RUN.
+        const sensitiveCmds = [];
+        const sensitiveMeta = new Map();
+        for (const cmd of workCmds) {
+          if (cmd.type !== 'write' && cmd.type !== 'edit') continue;
+          const relPath = (cmd.path || '').trim();
+          if (!relPath) continue;
+          let info;
+          try { info = classifyPath(projectRoot, relPath); }
+          catch (e) { info = { sensitive: true, reason: 'falha ao classificar o path.', real: relPath }; }
+          if (!info || !info.sensitive) continue;
+          sensitiveCmds.push(cmd);
+          sensitiveMeta.set(cmd, info);
+        }
+
         const batchDecisions = new Map();
-        if (runToConfirm.length > 0) {
-          if (typeof confirmRunBatch === 'function') {
-            const items = runToConfirm.map(c => ({ cmd: (c.cmd || '').trim(), danger: checkDestructive(c.cmd) }));
-            let response;
-            try { response = await confirmRunBatch(items); }
-            catch (e) { response = { approved: [], always: [] }; }
-            const approvedSet = new Set(response.approved || []);
-            const alwaysSet = new Set(response.always || []);
-            for (let i = 0; i < runToConfirm.length; i++) {
-              batchDecisions.set(runToConfirm[i], { approved: approvedSet.has(i), always: alwaysSet.has(i) });
-            }
-          } else {
-            for (const cmd of runToConfirm) batchDecisions.set(cmd, { approved: false, always: false });
+        const sensitiveDecisions = new Map();
+
+        const runItems = runToConfirm.map(function (c) {
+          return { cmd: (c.cmd || '').trim(), danger: checkDestructive(c.cmd), kind: 'run' };
+        });
+        const sensItems = sensitiveCmds.map(function (c) {
+          const info = sensitiveMeta.get(c);
+          const relPath = (c.path || '').trim();
+          return {
+            cmd: 'GRAVAR: ' + relPath,
+            danger: (info && info.reason) ? info.reason : 'path sensivel',
+            kind: c.type, // 'write' | 'edit'
+            path: relPath,
+            sensitive: true,
+          };
+        });
+        const allItems = runItems.concat(sensItems);
+
+        if (allItems.length > 0 && typeof confirmRunBatch === 'function') {
+          let response;
+          try { response = await confirmRunBatch(allItems); }
+          catch (e) { response = { approved: [], always: [] }; }
+
+          const approvedSet = new Set(response.approved || []);
+          const alwaysSet = new Set(response.always || []);
+
+          for (let i = 0; i < runToConfirm.length; i++) {
+            batchDecisions.set(runToConfirm[i], { approved: approvedSet.has(i), always: alwaysSet.has(i) });
           }
+          const offset = runToConfirm.length;
+          for (let j = 0; j < sensitiveCmds.length; j++) {
+            const idxInBatch = offset + j;
+            sensitiveDecisions.set(sensitiveCmds[j], {
+              approved: approvedSet.has(idxInBatch),
+              // Item 11: "Sempre permitir" NAO vale para sensiveis.
+              always: false,
+            });
+          }
+        } else {
+          // Falha fechada: sem confirmRunBatch, RUN e sensivel ficam negados.
+          for (const cmd of runToConfirm) batchDecisions.set(cmd, { approved: false, always: false });
+          for (const cmd of sensitiveCmds) sensitiveDecisions.set(cmd, { approved: false, always: false });
         }
 
         const results = [];
@@ -361,7 +510,30 @@ async function runAgent(opts) {
               onResult({ id: cid, type: 'run', arg: (cmd.cmd || '').slice(0, 80), result: msg, ok: false, denied: true });
               continue;
             }
-            if (decision.always && runAllowlist) runAllowlist.add((cmd.cmd || '').trim());
+            if (decision.always) {
+              const cmdTrimmed = (cmd.cmd || '').trim();
+              if (typeof onAlwaysAllow === 'function') onAlwaysAllow(cmdTrimmed);
+              else if (runAllowlist) runAllowlist.add(cmdTrimmed);
+            }
+          }
+
+          // ITEM 11: WRITE/EDIT sensivel exige aprovacao. Negado = mesmo
+          // formato de RUN negado (denied: true), nada e' gravado.
+          if ((cmd.type === 'write' || cmd.type === 'edit') && sensitiveDecisions.has(cmd)) {
+            const decision = sensitiveDecisions.get(cmd);
+            if (!decision || !decision.approved) {
+              const relPath = (cmd.path || '').trim();
+              const errType = (cmd.type === 'write') ? 'WRITE' : 'EDIT';
+              const msg = '<<<RESULT:' + errType + ':' + relPath + ':ERROR>>>\nNEGADO pelo usuario.\n<<<END>>>';
+              const cid = newCommandId();
+              // ITEM 11 (achado 1): marca denied:true para nao contar como
+              // falha de EDIT em editFailCounts/totalEditFails.
+              results.push({ ok: false, msg: msg, denied: true });
+              onCommand({ id: cid, type: cmd.type, arg: relPath, cmd: cmd, denied: true });
+              onResult({ id: cid, type: cmd.type, arg: relPath, result: msg, ok: false, denied: true });
+              continue;
+            }
+            // Aprovado: NAO entra em runAllowlist nem dispara onAlwaysAllow.
           }
 
           if (cmd.type === 'read') anyRead = true;
@@ -374,9 +546,13 @@ async function runAgent(opts) {
             if (cmd.type === 'read' && r.ok) {
               const rel = cmd.arg.split(':')[0].trim();
               if (attachedPaths.has(rel)) {
+                const dedupeRefs = extractReadRefs(r.msg);
+                const dedupeRefLines = dedupeRefs.length > 0
+                  ? '\n[Para OLD_REF use: ' + dedupeRefs.map(function (x) { return '[' + x.id + '] linhas ' + x.inicio + '-' + x.fim; }).join('; ') + ']'
+                  : '';
                 r = {
                   ok: true,
-                  msg: '<<<RESULT:READ:' + rel + ':ok — conteudo ja no anexo anterior>>>\n[O arquivo ' + rel + ' esta no anexo desta mensagem.]\n<<<END>>>',
+                  msg: '<<<RESULT:READ:' + rel + ':ok — conteudo ja no anexo anterior>>>\n[O arquivo ' + rel + ' esta no anexo desta mensagem.]' + dedupeRefLines + '\n<<<END>>>',
                   attached: true, attachedName: rel, deduped: true,
                 };
               } else {
@@ -384,6 +560,11 @@ async function runAgent(opts) {
                 if (attachResult.attached) attachedPaths.add(rel);
                 r = attachResult;
               }
+            }
+
+            // Registra arquivos realmente gravados (edit/write ok).
+            if (r && r.ok && (cmd.type === 'edit' || cmd.type === 'write')) {
+              recordTouched(cmd);
             }
 
             const { msg, ...extras } = r;
@@ -401,17 +582,21 @@ async function runAgent(opts) {
 
         const hasError = results.some(function (r) { return !r.ok; });
 
+        // ITEM 11 (achado 1): negações de WRITE/EDIT sensivel NAO contam
+        // como falha de EDIT para os limites por arquivo/total.
         const failedEdits = results.filter(function (r) {
+          if (r && r.denied === true) return false;
           return r.msg && r.msg.indexOf('<<<RESULT:EDIT:') === 0 && r.msg.indexOf(':ERROR>>>') !== -1;
         });
         if (failedEdits.length > 0) {
           for (const fe of failedEdits) {
+            if (fe && fe.denied === true) continue;
             const m = fe.msg.match(/<<<RESULT:EDIT:([^:]+):ERROR>>>/);
             if (!m) continue;
             const failedFile = m[1];
             const prev = editFailCounts.get(failedFile) || 0;
             editFailCounts.set(failedFile, prev + 1);
-            totalEditFails++;
+            totalEditFails.count++;
             if (prev + 1 >= MAX_EDIT_FAILS_PER_FILE) {
               return {
                 turns: turn, aborted: true,
@@ -420,8 +605,8 @@ async function runAgent(opts) {
               };
             }
           }
-          if (totalEditFails >= MAX_EDIT_FAILS_TOTAL) {
-            return { turns: turn, aborted: true, summary: 'ABORTADO: ' + totalEditFails + ' tentativas de EDIT falharam.', turnLog: turnLog };
+          if (totalEditFails.count >= MAX_EDIT_FAILS_TOTAL) {
+            return { turns: turn, aborted: true, summary: 'ABORTADO: ' + totalEditFails.count + ' tentativas de EDIT falharam.', turnLog: turnLog };
           }
         }
 
@@ -459,14 +644,40 @@ async function runAgent(opts) {
         let finalSummary = reply || '';
         finalSummary = finalSummary.replace(/<<<DONE>>>/g, '');
         finalSummary = finalSummary.trim();
-        return { turns: turn, summary: finalSummary, turnLog: turnLog };
+
+        const touchedFiles = Array.from(touchedFilesSet);
+        const needsReview = touchedFiles.length > 0;
+        const reviewPrompt = needsReview
+          ? ('Revise as alteracoes que voce acabou de fazer nos seguintes arquivos:\n' +
+             touchedFiles.map(function (f) { return '- ' + f; }).join('\n') +
+             '\n\nLeia cada arquivo alterado (<<<READ:caminho>>>) e verifique: ' +
+             'se a mudanca atende exatamente a tarefa original, ' +
+             'se nao quebrou a sintaxe, se nao introduziu regressao, ' +
+             'e se o estilo e a indentacao estao consistentes. ' +
+             'Corrija o que estiver errado com <<<EDIT>>>. ' +
+             'Se estiver tudo certo, emita <<<DONE>>> SOZINHO.')
+          : '';
+
+        return {
+          turns: turn,
+          summary: finalSummary,
+          turnLog: turnLog,
+          needsReview: needsReview,
+          touchedFiles: touchedFiles,
+          reviewPrompt: reviewPrompt,
+        };
       }
 
       turn++;
     }
   } catch (e) {
     if (e && e.message === 'ABORTED_BY_USER') abortError = e;
-    else throw e;
+    else {
+      // ITEM 19: preserva turnLog no erro (sem mudar o contrato — re-lanca o
+      // MESMO erro, anexando turnLog).
+      try { e.turnLog = turnLog; } catch (_) { /* ignora */ }
+      throw e;
+    }
   }
 
   if (abortError) {
@@ -474,7 +685,10 @@ async function runAgent(opts) {
     return { turns: turn, aborted: true, summary: 'ABORTADO pelo usuario no turno ' + turn + '.', turnLog: turnLog };
   }
 
-  throw new Error('limite de ' + MAX_TURNS + ' turnos atingido');
+  // ITEM 19: limite de turnos — anexa turnLog ao erro antes de lancar.
+  const limitErr = new Error('limite de ' + MAX_TURNS + ' turnos atingido');
+  try { limitErr.turnLog = turnLog; } catch (_) { /* ignora */ }
+  throw limitErr;
 }
 
 module.exports = { runAgent, pruneSessionLog, SESSION_LOG_MAX_CHARS };

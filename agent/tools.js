@@ -1,5 +1,6 @@
 // tools.js
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
@@ -21,9 +22,14 @@ try {
 const DEFAULT_IGNORE = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', 'target',
   '__pycache__', '.venv', 'venv', 'coverage', '.cache',
+  'vendor', '.idea', 'storage',
 ]);
 
 const DIFF_MAX_LINES = 200;
+
+// Item 16: GREP pula binarios e arquivos muito grandes.
+const GREP_MAX_FILE_BYTES = 1 * 1024 * 1024;
+const GREP_SNIFF_BYTES = 8192;
 
 // ============================================================
 // READ — limite de linhas por arquivo inteiro
@@ -54,9 +60,20 @@ function killProcessTree(child, isWin) {
 
     try { child.kill(); } catch (e) { /* ignora */ }
   } else {
-    try { child.kill('SIGTERM'); } catch (e) { /* ignora */ }
+    // Item 20b: tentar matar o GRUPO de processos (filho + descendentes).
+    // spawn deve ter sido feito com detached:true para o pid ser lider do grupo.
+    let killedGroup = false;
+    try {
+      process.kill(-child.pid, 'SIGTERM');
+      killedGroup = true;
+    } catch (e) { /* ignora */ }
+    if (!killedGroup) {
+      try { child.kill('SIGTERM'); } catch (e) { /* ignora */ }
+    }
     setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch (e) { /* ignora */ }
+      try { process.kill(-child.pid, 'SIGKILL'); } catch (e) {
+        try { child.kill('SIGKILL'); } catch (_) { /* ignora */ }
+      }
     }, 2000);
   }
 }
@@ -78,7 +95,7 @@ function killActiveProcesses() {
 }
 
 // ============================================================
-// MEMORIA DE TRECHOS LIDOS (para OLD_REF)
+// MEMORIA DE TRECHOS LIDOS (para OLD_REF) — LRU
 // ============================================================
 const readCache = new Map();
 let refCounter = 0;
@@ -94,7 +111,12 @@ function nextRefId() {
 }
 
 function getRef(id) {
-  return readCache.get(id);
+  // Item 17: LRU real — ao acessar, mover para o fim da fila.
+  if (!readCache.has(id)) return undefined;
+  const val = readCache.get(id);
+  readCache.delete(id);
+  readCache.set(id, val);
+  return val;
 }
 
 function hashOf(s) {
@@ -111,22 +133,134 @@ function putRef(id, obj) {
 }
 
 // ============================================================
-// PATH SAFE
+// PATH SAFE — sync + realpath (fecha symlink/junction)
 // ============================================================
+const realRootCache = new Map();
+
+function realpathOrNullSync(p) {
+  try {
+    return fsSync.realpathSync.native(p);
+  } catch (e) {
+    return null;
+  }
+}
+
+function getRealRoot(rootNorm) {
+  if (realRootCache.has(rootNorm)) return realRootCache.get(rootNorm);
+  const real = realpathOrNullSync(rootNorm) || rootNorm;
+  realRootCache.set(rootNorm, real);
+  return real;
+}
+
+// Resolve o real do ancestral existente mais profundo + o resto.
+// Se nem o ancestral existir (nada), devolve null.
+function resolveRealPathSync(absPath) {
+  let cur = path.resolve(absPath);
+  let tail = [];
+  for (let i = 0; i < 64; i++) {
+    const real = realpathOrNullSync(cur);
+    if (real !== null) {
+      if (tail.length === 0) return real;
+      return path.join.apply(path, [real].concat(tail));
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) return null;
+    tail.unshift(path.basename(cur));
+    cur = parent;
+  }
+  return null;
+}
+
+function normCase(p, isWin) {
+  return isWin ? p.toLowerCase() : p;
+}
+
 function makeSafe(root) {
   const rootNorm = path.resolve(root);
   const isWin = process.platform === 'win32';
-  const rootCmp = isWin ? rootNorm.toLowerCase() : rootNorm;
+  const realRoot = getRealRoot(rootNorm);
+  const realRootCmp = normCase(realRoot, isWin);
+  const sep = path.sep;
 
   return (p) => {
     const abs = path.resolve(rootNorm, p);
-    const absCmp = isWin ? abs.toLowerCase() : abs;
-
-    if (absCmp !== rootCmp && !absCmp.startsWith(rootCmp + path.sep)) {
+    const realAbs = resolveRealPathSync(abs);
+    if (!realAbs) {
+      throw new Error('caminho invalido: ' + p);
+    }
+    const realAbsCmp = normCase(realAbs, isWin);
+    if (realAbsCmp !== realRootCmp && !realAbsCmp.startsWith(realRootCmp + sep)) {
       throw new Error('caminho fora do projeto: ' + p);
     }
     return abs;
   };
+}
+
+// ============================================================
+// classifyPath — item 11: paths sensiveis pedem confirmacao
+// ============================================================
+function isSensitivePathReal(realPath, realRoot) {
+  const isWin = process.platform === 'win32';
+  const r = normCase(realPath, isWin);
+  const base = normCase(realRoot, isWin);
+
+  let rel = realPath;
+  if (normCase(realPath, isWin).startsWith(base + path.sep)) {
+    rel = realPath.slice(realRoot.length + 1);
+  } else if (normCase(realPath, isWin) === base) {
+    rel = '';
+  } else {
+    // Fora da raiz — nao e' nosso caso de sensivel (makeSafe ja bloqueia).
+    rel = path.basename(realPath);
+  }
+
+  const parts = rel.split(/[\\/]+/).filter(Boolean);
+  if (parts.length === 0) return { sensitive: false, reason: '' };
+
+  const last = parts[parts.length - 1];
+  if (normCase(last, isWin) === 'package.json') {
+    return { sensitive: true, reason: 'package.json e um arquivo de configuracao do projeto (dependencias/scripts).' };
+  }
+
+  // .git/hooks/** (qualquer profundidade dentro)
+  const gitIdx = parts.findIndex(function (x) { return normCase(x, isWin) === '.git'; });
+  if (gitIdx !== -1 && parts.length > gitIdx + 1) {
+    const next = normCase(parts[gitIdx + 1], isWin);
+    if (next === 'hooks') {
+      return { sensitive: true, reason: 'arquivos dentro de .git/hooks executam durante operacoes do git.' };
+    }
+  }
+
+  // .vscode/** (qualquer profundidade dentro)
+  if (parts.some(function (x) { return normCase(x, isWin) === '.vscode'; })) {
+    return { sensitive: true, reason: 'arquivos dentro de .vscode configuram o editor/workspace.' };
+  }
+
+  return { sensitive: false, reason: '' };
+}
+
+function classifyPath(projectRoot, rel) {
+  const rootNorm = path.resolve(projectRoot);
+  const isWin = process.platform === 'win32';
+  const realRoot = getRealRoot(rootNorm);
+
+  const abs = path.resolve(rootNorm, rel);
+  const real = resolveRealPathSync(abs) || abs;
+
+  const inside = (function () {
+    const rc = normCase(realRoot, isWin);
+    const ac = normCase(real, isWin);
+    return ac === rc || ac.startsWith(rc + path.sep);
+  })();
+
+  if (!inside) {
+    // makeSafe vai barrar de qualquer forma; retornamos sensivel=true
+    // com motivo generico para falhar fechado se cair aqui.
+    return { sensitive: true, reason: 'path fora da raiz do projeto.', real: real };
+  }
+
+  const r = isSensitivePathReal(real, realRoot);
+  return { sensitive: r.sensitive, reason: r.reason, real: real };
 }
 
 // ============================================================
@@ -186,9 +320,77 @@ async function validateJsSyntax(rel, content) {
   }
 }
 
+// ============================================================
+// ITEM 23: validacao JSON e PHP
+// ============================================================
+function isJsonFile(rel) {
+  return path.extname(rel).toLowerCase() === '.json';
+}
+
+function isPhpFile(rel) {
+  return path.extname(rel).toLowerCase() === '.php';
+}
+
+function validateJsonSyntax(content) {
+  try {
+    JSON.parse(String(content));
+    return { ok: true };
+  } catch (err) {
+    let errorLine = 0;
+    let errorCol = 0;
+    const m = String(err && err.message || '').match(/position\s+(\d+)/i);
+    if (m) {
+      const pos = parseInt(m[1], 10);
+      if (Number.isFinite(pos) && pos >= 0) {
+        const before = String(content).slice(0, pos);
+        const lines = before.split('\n');
+        errorLine = lines.length;
+        errorCol = lines[lines.length - 1].length + 1;
+      }
+    }
+    return {
+      ok: false,
+      raw: String(err && err.message || err).slice(0, 800),
+      content: String(content),
+      errorLine: errorLine,
+      errorCol: errorCol,
+    };
+  }
+}
+
+async function validatePhpSyntax(rel, content) {
+  const tmp = path.join(
+    os.tmpdir(),
+    'agente-check-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) + '.php'
+  );
+
+  try {
+    await fs.writeFile(tmp, content, 'utf8');
+  } catch (e) {
+    return { ok: true };
+  }
+
+  try {
+    await execFileP('php', ['-l', tmp], { timeout: 10000, encoding: 'utf8' });
+    return { ok: true };
+  } catch (err) {
+    // Se o php nao existe, ignorar em silencio (nao bloqueia WRITE/EDIT).
+    if (err && (err.code === 'ENOENT' || (err.message && err.message.indexOf('ENOENT') !== -1))) {
+      return { ok: true };
+    }
+    const raw = ((err.stderr || '') + (err.stdout || '') + (err.message ? '\n' + err.message : '')).trim();
+    let errorLine = 0;
+    const lm = raw.match(/on line (\d+)/i) || raw.match(/:(\d+)\s*$/m);
+    if (lm) errorLine = parseInt(lm[1], 10);
+    return { ok: false, raw: raw.slice(0, 800), content: content, errorLine: errorLine };
+  } finally {
+    try { await fs.unlink(tmp); } catch (e) { /* ignora */ }
+  }
+}
+
 function syntaxErrorMessage(type, rel, result) {
   let msg = '<<<RESULT:' + type + ':' + rel + ':SYNTAX_ERROR>>>\n';
-  msg += 'Seu conteudo tem erro de sintaxe JS e NAO foi gravado no disco.\n\n';
+  msg += 'Seu conteudo tem erro de sintaxe e NAO foi gravado no disco.\n\n';
 
   if (result.stripped) {
     msg += 'DIAGNOSTICO: parece que as crases (`) dos template literals foram REMOVIDAS pelo renderer do chat web.\n';
@@ -198,7 +400,6 @@ function syntaxErrorMessage(type, rel, result) {
     msg += "  BOM:   const msg = 'Ola ' + nome;\n";
     msg += "  RUIM:  path.join('dist', `${base}.min.html`);\n";
     msg += "  BOM:   path.join('dist', base + '.min.html');\n\n";
-    msg += 'Reescreva o arquivo INTEIRO sem nenhuma crase. Nao tente EDIT nele — pode piorar.\n\n';
   }
 
   if (result.content && result.errorLine > 0) {
@@ -210,10 +411,47 @@ function syntaxErrorMessage(type, rel, result) {
       const marker = (i + 1) === result.errorLine ? ' >>> ' : '     ';
       msg += marker + String(i + 1).padStart(4) + '| ' + lines[i] + '\n';
     }
-    msg += '\nDica: o erro real normalmente esta na LINHA ANTERIOR a que o node reporta.\n\n';
+    msg += '\nDica: o erro real normalmente esta na LINHA ANTERIOR a que o parser reporta.\n\n';
   }
 
-  msg += 'Erro do node --check:\n' + result.raw + '\n';
+  msg += 'Erro reportado:\n' + result.raw + '\n\n';
+  msg += 'COMO CORRIGIR:\n';
+  if (type === 'EDIT') {
+    msg += '  - Corrija APENAS o trecho com problema com <<<EDIT:' + rel + '>>> usando OLD_REF (ou OLD/NEW).\n';
+    msg += '  - NAO use <<<WRITE:' + rel + '>>> aqui: o WRITE recusa arquivos que ja existem.\n';
+  } else if (type === 'WRITE') {
+    msg += '  - Reenvie o conteudo corrigido com <<<WRITE:' + rel + '>>>.\n';
+  }
+  msg += '  - Revise a linha indicada acima antes de reenviar.\n';
+  msg += '<<<END>>>';
+  return msg;
+}
+
+// Item 23: mensagem de erro especifica para JSON/PHP.
+function validateErrorMessage(type, rel, kind, result) {
+  let msg = '<<<RESULT:' + type + ':' + rel + ':' + kind + '>>>\n';
+  msg += 'Seu conteudo tem erro de ' + kind + ' e NAO foi gravado no disco.\n\n';
+
+  if (result.content && result.errorLine > 0) {
+    const lines = String(result.content).split('\n');
+    const from = Math.max(0, result.errorLine - 5);
+    const to = Math.min(lines.length, result.errorLine + 2);
+    msg += 'Contexto do arquivo (ERRO reportado na linha ' + result.errorLine + '):\n';
+    for (let i = from; i < to; i++) {
+      const marker = (i + 1) === result.errorLine ? ' >>> ' : '     ';
+      msg += marker + String(i + 1).padStart(4) + '| ' + lines[i] + '\n';
+    }
+    msg += '\n';
+  }
+
+  msg += 'Erro reportado:\n' + (result.raw || '(sem detalhes)') + '\n\n';
+  msg += 'COMO CORRIGIR:\n';
+  if (type === 'EDIT') {
+    msg += '  - Corrija APENAS o trecho com problema com <<<EDIT:' + rel + '>>> usando OLD_REF (ou OLD/NEW).\n';
+    msg += '  - NAO use <<<WRITE:' + rel + '>>> aqui: o WRITE recusa arquivos que ja existem.\n';
+  } else if (type === 'WRITE') {
+    msg += '  - Reenvie o conteudo corrigido com <<<WRITE:' + rel + '>>>.\n';
+  }
   msg += '<<<END>>>';
   return msg;
 }
@@ -223,6 +461,19 @@ async function writeOrValidate(abs, rel, content, type) {
     const v = await validateJsSyntax(rel, content);
     if (!v.ok) {
       return { ok: false, msg: syntaxErrorMessage(type, rel, v) };
+    }
+  }
+  // ITEM 23: validar JSON e PHP tambem.
+  if (isJsonFile(rel)) {
+    const v = validateJsonSyntax(content);
+    if (!v.ok) {
+      return { ok: false, msg: validateErrorMessage(type, rel, 'JSON_ERROR', v) };
+    }
+  }
+  if (isPhpFile(rel)) {
+    const v = await validatePhpSyntax(rel, content);
+    if (!v.ok) {
+      return { ok: false, msg: validateErrorMessage(type, rel, 'PHP_ERROR', v) };
     }
   }
   await fs.writeFile(abs, content, 'utf8');
@@ -323,9 +574,34 @@ async function grep(safe, root, arg) {
   let totalMatches = 0;
   let truncated = false;
 
+  // Item 16: pular binario (byte nulo nos primeiros 8192 bytes) e arquivo
+  // maior que GREP_MAX_FILE_BYTES. Nao altera o formato da saida.
+  async function isBinaryOrTooBig(absPath) {
+    try {
+      const st = await fs.stat(absPath);
+      if (!st.isFile()) return true;
+      if (st.size > GREP_MAX_FILE_BYTES) return true;
+      const fh = await fs.open(absPath, 'r');
+      try {
+        const buf = Buffer.alloc(Math.min(GREP_SNIFF_BYTES, st.size));
+        const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+        for (let i = 0; i < bytesRead; i++) {
+          if (buf[i] === 0) return true;
+        }
+        return false;
+      } finally {
+        try { await fh.close(); } catch (e) { /* ignora */ }
+      }
+    } catch (e) {
+      return true;
+    }
+  }
+
   async function searchFile(relPath) {
     try {
-      const raw = await fs.readFile(safe(relPath), 'utf8');
+      const absPath = safe(relPath);
+      if (await isBinaryOrTooBig(absPath)) return;
+      const raw = await fs.readFile(absPath, 'utf8');
       const lines = raw.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (re.test(lines[i])) {
@@ -407,7 +683,7 @@ async function glob(safe, root, arg) {
 }
 
 // ============================================================
-// READ (com AUTO-DESMINIFICAR)
+// READ
 // ============================================================
 async function readFile(safe, arg) {
   const parsed = parseReadArg(arg);
@@ -415,23 +691,7 @@ async function readFile(safe, arg) {
   const start = parsed.start;
   const end = parsed.end;
   const abs = safe(rel);
-  let raw = await fs.readFile(abs, 'utf8');
-
-  // AUTO-DESMINIFICAR
-  if (raw.length > 5000 && raw.split('\n').length < 5) {
-    try {
-      const formatted = await formatCode(raw, rel);
-      if (formatted && formatted !== raw && formatted.length > raw.length * 0.8) {
-        if (formatted.length < raw.length * 1.5) {
-          await fs.writeFile(abs, formatted, 'utf8');
-          console.log('[tools] auto-desminificado: ' + rel + ' (' + raw.length + ' -> ' + formatted.length + ' bytes)');
-          raw = formatted;
-        }
-      }
-    } catch (e) {
-      console.warn('[tools] auto-desminificar falhou em ' + rel + ': ' + e.message);
-    }
-  }
+  const raw = await fs.readFile(abs, 'utf8');
 
   const lines = raw.split('\n');
   const total = lines.length;
@@ -904,6 +1164,17 @@ const RUN_MAX_OUTPUT = 10 * 1024 * 1024;
 const RUN_MAX_RETURNED = 30000;
 const SIGKILL_GRACE_MS = 10000;
 
+// Item 20a: devolve inicio + marcador + fim quando o output excede o limite.
+function truncateOutputMiddle(s) {
+  if (typeof s !== 'string') return s;
+  if (s.length <= RUN_MAX_RETURNED) return s;
+  const half = Math.floor(RUN_MAX_RETURNED / 2);
+  const head = s.slice(0, half);
+  const tail = s.slice(s.length - half);
+  const removed = s.length - (half * 2);
+  return head + '\n[... truncado ' + removed + ' bytes ...]\n' + tail;
+}
+
 async function runCmd(root, cmd) {
   const emptyResult = (reason) => ({
     ok: false,
@@ -943,9 +1214,9 @@ async function runCmd(root, cmd) {
       if (child) activeChildren.delete(child);
 
       const out = stdout + (stderr ? '\n[stderr]\n' + stderr : '');
-      const outTrunc = out.slice(0, RUN_MAX_RETURNED);
-      const stdoutOut = stdout.slice(0, RUN_MAX_RETURNED);
-      const stderrOut = stderr.slice(0, RUN_MAX_RETURNED);
+      const outTrunc = truncateOutputMiddle(out);
+      const stdoutOut = truncateOutputMiddle(stdout);
+      const stderrOut = truncateOutputMiddle(stderr);
       const numericExit = (typeof exitCode === 'number') ? exitCode : -1;
 
       if (killedByUser) {
@@ -1009,12 +1280,17 @@ async function runCmd(root, cmd) {
     };
 
     try {
-      child = spawn(trimmed, {
+      // Item 20b: no POSIX, detached:true faz o filho liderar o grupo,
+      // permitindo process.kill(-pid) matar toda a arvore. No Windows
+      // mantemos o comportamento atual (taskkill /T /F).
+      const spawnOpts = {
         cwd: root,
         shell: true,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      };
+      if (!isWin) spawnOpts.detached = true;
+      child = spawn(trimmed, spawnOpts);
     } catch (e) {
       return resolve(emptyResult('falha ao iniciar processo: ' + e.message));
     }
@@ -1088,7 +1364,11 @@ const DESTRUCTIVE_PATTERNS = [
     label: 'download seguido de execucao remota (iwr | iex)',
   },
   {
-    re: /\$env:|\b(Get|Set|Remove|New|Copy|Move|Test|Start|Stop)-[A-Z]\w+|\b(Select|Where|ForEach|Sort|Group|Measure|Write|Out|Invoke)-[A-Z]\w+|\b2>\$null\b|\bWrite-Host\b/i,
+    re: /\$env:/i,
+    label: 'sintaxe PowerShell (o shell e cmd.exe)',
+  },
+  {
+    re: /\b(Get|Set|Remove|New|Copy|Move|Test|Start|Stop)-[A-Z]\w+|\b(Select|Where|ForEach|Sort|Group|Measure|Write|Out|Invoke)-[A-Z]\w+|\b2>\$null\b|\bWrite-Host\b/,
     label: 'sintaxe PowerShell (o shell e cmd.exe)',
   },
 ];
@@ -1146,4 +1426,5 @@ module.exports = {
   checkDestructive,
   killActiveProcesses,
   getFileContent,
+  classifyPath,
 };

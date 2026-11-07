@@ -1,10 +1,11 @@
 // main.js
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('url');
 const { runAgent, pruneSessionLog } = require('./agent/loop');
 const { compactSession } = require('./agent/compact');
-const { disableDeepSeekFeatures, resetChat, requestAbort, waitChatReady, resetSseState } = require('./agent/bridge');
+const { disableDeepSeekFeatures, resetChat, requestAbort, waitChatReady } = require('./agent/bridge');
 const { killActiveProcesses, resetReadCache } = require('./agent/tools');
 const projects = require('./agent/projects');
 
@@ -29,10 +30,10 @@ let busyNavigation = false;
 let currentTurnLog = null;
 
 // Set<string> usado pelo loop.js para permitir RUNs sem confirmacao.
-// Mantido como Set (loop.js usa .has/.add), mas com timestamps paralelos
-// pra aplicar TTL e limpar entradas velhas.
+// Mantido como Set (loop.js usa .has/.add), mas o TTL e' aplicado em
+// loadRunAllowlistIntoMemory/persistRunAllowlist/pruneRunAllowlist usando
+// o timestamp persistido em projects.runAllowlistTs.
 const runAllowlist = new Set();
-const runAllowlistTimestamps = new Map();
 
 // UUIDs de chats que ja foram apagados no DeepSeek nesta execucao.
 // Evita repetir a chamada remota quando o usuario clica "remover" 2x.
@@ -134,47 +135,91 @@ function loadChatStateIntoMemory(projectId, chatUuid) {
   return true;
 }
 
-// Carrega allowlist do projeto, descartando entradas vencidas (TTL 24h).
+// Carrega allowlist do projeto descartando:
+//   - comandos sem timestamp (dados antigos) — expirados por definicao
+//   - comandos com timestamp mais antigo que RUN_ALLOWLIST_TTL_MS
+// e PERSISTE a lista ja limpa (runAllowlist + runAllowlistTs juntos).
 function loadRunAllowlistIntoMemory(projectId) {
   runAllowlist.clear();
-  runAllowlistTimestamps.clear();
   try {
-    const list = projects.getRunAllowlist(projectId);
+    const list = projects.getRunAllowlist(projectId) || [];
+    const ts = projects.getRunAllowlistTs(projectId) || {};
     const now = Date.now();
+    const alive = [];
+    const aliveTs = {};
     for (const cmd of list) {
-      // projects.getRunAllowlist retorna strings; o timestamp nao e'
-      // persistido por projeto. Usamos Date.now() como "recem-adicionado"
-      // — se o app ficou 24h+ fechado, o comando e' removido.
+      const t = ts[cmd];
+      if (typeof t !== 'number' || !Number.isFinite(t)) continue;
+      if (now - t > RUN_ALLOWLIST_TTL_MS) continue;
+      alive.push(cmd);
+      aliveTs[cmd] = t;
       runAllowlist.add(cmd);
-      runAllowlistTimestamps.set(cmd, now);
+    }
+    // Persiste a lista ja limpa (se algo foi descartado, evita lixo no JSON).
+    if (alive.length !== list.length) {
+      try {
+        projects.setRunAllowlist(projectId, alive);
+        projects.setRunAllowlistTs(projectId, aliveTs);
+      } catch (e) {}
     }
   } catch (e) {}
 }
 
+// A memoria (runAllowlist) e' a fonte da verdade. Para cada cmd em
+// memoria, usa o ts do projeto (ou Date.now() se faltar); descarta
+// expirados (removendo tambem do Set); grava SO os vivos (setRunAllowlist
+// + setRunAllowlistTs). Nao le a lista do projeto para manter itens fora
+// da memoria — assim runAllowlist.clear() + persistRunAllowlist() limpa.
 function persistRunAllowlist() {
   if (!activeProjectId) return;
   try {
-    // Filtra vencidos antes de gravar
     const now = Date.now();
+    const srcTs = projects.getRunAllowlistTs(activeProjectId) || {};
     const alive = [];
+    const aliveTs = {};
+    const toRemove = [];
     for (const cmd of runAllowlist) {
-      const ts = runAllowlistTimestamps.get(cmd) || now;
-      if (now - ts <= RUN_ALLOWLIST_TTL_MS) {
-        alive.push(cmd);
-      } else {
-        runAllowlist.delete(cmd);
-        runAllowlistTimestamps.delete(cmd);
+      let t = srcTs[cmd];
+      if (typeof t !== 'number' || !Number.isFinite(t)) {
+        // Sem timestamp no projeto: usa agora (defensivo).
+        t = now;
       }
+      if (now - t > RUN_ALLOWLIST_TTL_MS) {
+        toRemove.push(cmd);
+        continue;
+      }
+      alive.push(cmd);
+      aliveTs[cmd] = t;
     }
+    for (const cmd of toRemove) runAllowlist.delete(cmd);
     projects.setRunAllowlist(activeProjectId, alive);
+    projects.setRunAllowlistTs(activeProjectId, aliveTs);
   } catch (e) {}
 }
 
+// Remove do Set em memoria (e do projeto, gravando as duas estruturas)
+// os comandos expirados ou sem timestamp. Reutiliza a logica do
+// persistRunAllowlist.
+function pruneRunAllowlist() {
+  persistRunAllowlist();
+}
+
+// onAlwaysAllow: grava comando + timestamp no projeto. O Set em memoria
+// e' atualizado pra refletir imediatamente nesta sessao. NUNCA e' chamado
+// para WRITE/EDIT sensivel (regra do loop + filtro no confirmRunBatch).
 function addToRunAllowlist(cmd) {
   const trimmed = String(cmd || '').trim();
   if (!trimmed) return;
   runAllowlist.add(trimmed);
-  runAllowlistTimestamps.set(trimmed, Date.now());
+  if (!activeProjectId) return;
+  try {
+    const list = projects.getRunAllowlist(activeProjectId) || [];
+    const ts = projects.getRunAllowlistTs(activeProjectId) || {};
+    ts[trimmed] = Date.now();
+    if (list.indexOf(trimmed) === -1) list.push(trimmed);
+    projects.setRunAllowlist(activeProjectId, list);
+    projects.setRunAllowlistTs(activeProjectId, ts);
+  } catch (e) {}
 }
 
 function applyActiveState() {
@@ -183,7 +228,6 @@ function applyActiveState() {
     activeProjectId = null; activeChatUuid = null;
     sessionLog = []; tasksCount = 0; lastSummary = '';
     runAllowlist.clear();
-    runAllowlistTimestamps.clear();
     return;
   }
   activeProjectId = active.id;
@@ -289,8 +333,31 @@ function createAgentWindow() {
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   attachStateSaver(win);
-  // debug: mantido enquanto voce esta desenvolvendo
-  win.webContents.openDevTools({ mode: 'detach' });
+
+  // ITEM 8: bloquear navegacao e novas janelas da janela principal.
+  // - novas janelas: sempre deny; http/https abrem no navegador externo.
+  // - will-navigate: so permite o proprio index.html (file://); o resto
+  //   e' bloqueado, e http/https abrem externo; outros protocolos so bloqueiam.
+  const indexUrl = pathToFileURL(path.join(__dirname, 'renderer', 'index.html')).href;
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      if (typeof url === 'string' && /^https?:/i.test(url)) {
+        shell.openExternal(url).catch(() => {});
+      }
+    } catch (e) {}
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    try {
+      if (typeof url === 'string' && url.split('#')[0] === indexUrl) return;
+      event.preventDefault();
+      if (typeof url === 'string' && /^https?:/i.test(url)) {
+        shell.openExternal(url).catch(() => {});
+      }
+    } catch (e) {
+      try { event.preventDefault(); } catch (_) {}
+    }
+  });
 
   win.on('closed', () => {
     win = null;
@@ -356,9 +423,6 @@ function createChatWindow() {
     `).catch(() => {});
     disableDeepSeekFeatures(chatWindow);
   });
-
-  // debug: mantido enquanto voce esta desenvolvendo
-  chatWindow.webContents.openDevTools({ mode: 'detach' });
 
   attachStateSaver(chatWindow);
 
@@ -607,7 +671,17 @@ async function renameChatRemote(uuid, title) {
 }
 
 // ============================================================
-// CONFIRM BATCH de RUNs
+// CONFIRM BATCH de RUNs / WRITE/EDIT sensiveis
+//
+// ITEM 11: o lote mistura itens de RUN com itens de WRITE/EDIT em path
+// sensivel. Para RUN, item = { cmd, danger, kind:'run' }. Para WRITE/EDIT,
+// item = { cmd:'GRAVAR: <path>', danger:<motivo>, kind:'write'|'edit',
+// path, sensitive:true }.
+//
+// Defesa em profundidade: mesmo que o renderer marque "Sempre permitir"
+// em um item sensivel, filtramos aqui — nenhum item `sensitive:true`
+// entra no array `always`, e o loop tambem ignora decision.always para
+// esses comandos.
 // ============================================================
 function confirmRunBatch(items) {
   return new Promise((resolve) => {
@@ -620,7 +694,15 @@ function confirmRunBatch(items) {
       resolved = true;
       ipcMain.removeListener('run:batch-response', handler);
       clearTimeout(timer);
-      resolve(data || { approved: [], always: [] });
+
+      const raw = data || {};
+      const approved = Array.isArray(raw.approved) ? raw.approved : [];
+      const rawAlways = Array.isArray(raw.always) ? raw.always : [];
+      const safeAlways = rawAlways.filter(function (idx) {
+        const it = items[idx];
+        return it && it.sensitive !== true;
+      });
+      resolve({ approved: approved, always: safeAlways });
     };
 
     const handler = (event, data) => { done(data); };
@@ -659,10 +741,6 @@ ipcMain.handle('dialog:pickFolder', async () => {
 
 // ============================================================
 // IPC — projetos e chats
-//
-// CORRIGIDO: valida tipos basicos (string nao-vazia) antes de chamar
-// projects.*. Sem isso, um XSS no renderer poderia chamar
-// projectsAPI.delete(undefined, false) e causar exception obscura.
 // ============================================================
 function isNonEmptyString(x) { return typeof x === 'string' && x.length > 0; }
 
@@ -762,16 +840,12 @@ ipcMain.handle('projects:setActive', async (event, { projectId }) => {
   if (!isNonEmptyString(projectId)) return { ok: false, error: 'projectId invalido' };
   if (running) return { ok: false, error: 'existe uma tarefa em andamento. Aguarde ou clique em Parar.' };
   if (busyNavigation) return { ok: false, error: 'existe uma operacao em andamento. Aguarde.' };
-  try { resetSseState(); } catch (e) {}
 
   busyNavigation = true;
   try {
     persistActiveChatState();
     projects.setActiveProject(projectId);
     applyActiveState();
-    // Limpa cache de UUIDs apagados: o novo projeto pode ter os mesmos UUIDs
-    // (improvável, mas se o user recriou o projeto, os UUIDs sao diferentes).
-    // Aqui limpamos por seguranca.
     SUCCEEDED_THIS_SESSION.clear();
 
     if (chatReady()) {
@@ -886,7 +960,6 @@ ipcMain.handle('projects:switchChat', async (event, { projectId, uuid }) => {
   if (running) return { ok: false, error: 'existe uma tarefa em andamento. Aguarde ou clique em Parar antes de trocar de chat.' };
   if (busyNavigation) return { ok: false, error: 'existe uma operacao em andamento. Aguarde.' };
   if (!chatReady()) return { ok: false, error: 'janela do DeepSeek nao existe.' };
-  try { resetSseState(); } catch (e) {}
 
   busyNavigation = true;
   try {
@@ -997,6 +1070,10 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
   if (busyNavigation) return { ok: false, error: 'existe uma operacao em andamento. Aguarde.', stats: stats() };
   if (!chatReady()) return { ok: false, error: 'janela do DeepSeek nao existe. Reinicie o app.', stats: stats() };
   if (!activeProjectId) return { ok: false, error: 'nenhum projeto ativo. Crie um projeto primeiro.', stats: stats() };
+
+  // Descarta comandos expirados/sem timestamp antes de rodar.
+  try { pruneRunAllowlist(); } catch (e) {}
+
   if (!activeChatUuid) {
     const ph = createPendingChat();
     if (!ph) return { ok: false, error: 'falha ao criar placeholder', stats: stats() };
@@ -1027,23 +1104,14 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
   if (chatReady() && chatWindow.isVisible()) chatWindow.webContents.focus();
 
   try {
-    // Passa runAllowlist como Set (loop.js usa .has/.add), mas loga
-    // cada add para atualizar timestamps no persistRunAllowlist.
-    const origAdd = runAllowlist.add.bind(runAllowlist);
-    runAllowlist.add = (cmd) => {
-      addToRunAllowlist(cmd);
-      return runAllowlist;
-    };
-
     const result = await runAgent({
       task, projectRoot, chatView: chatWindow, sessionLog,
       onLog: sendLog, onCommand: sendCommand, onResult: sendResult, onTurn: sendTurn,
       shouldAbort: () => abortRequested,
       confirmRunBatch: confirmRunBatch,
       runAllowlist: runAllowlist,
+      onAlwaysAllow: addToRunAllowlist,
     });
-
-    runAllowlist.add = origAdd;
 
     if (win && !win.isDestroyed()) win.webContents.focus();
 
@@ -1108,6 +1176,13 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
     if (win && !win.isDestroyed()) win.webContents.focus();
     sendLog('[main] ERRO: ' + err.message);
     console.error('[main] STACK COMPLETO:', err.stack || err);
+    // ITEM 19b: preserva turnLog acumulado no erro (mesmo destino do
+    // caminho de sucesso: sessionLog). Apenas o push, sem persistActiveChatState.
+    if (err && Array.isArray(err.turnLog)) {
+      for (const msg of err.turnLog) {
+        if (msg && (msg.role === 'user' || msg.role === 'assistant')) sessionLog.push(msg);
+      }
+    }
     currentTurnLog = null;
     return { ok: false, error: err.message, stats: statsAfterRun() };
   } finally {
@@ -1165,7 +1240,6 @@ ipcMain.handle('agent:compact', async (event) => {
     sessionLog = result.newSessionLog;
     tasksCount = 0;
     runAllowlist.clear();
-    runAllowlistTimestamps.clear();
     persistRunAllowlist();
 
     if (result && result.chatWasReset) {
@@ -1199,7 +1273,6 @@ ipcMain.handle('agent:compact', async (event) => {
     if (err && err.resetDone) {
       sessionLog = []; tasksCount = 0; lastSummary = '';
       runAllowlist.clear();
-      runAllowlistTimestamps.clear();
       persistRunAllowlist();
       persistActiveChatState();
       try { const ph = createPendingChat(); if (!ph) activeChatUuid = null; }
@@ -1228,7 +1301,6 @@ ipcMain.handle('agent:resetSession', async (event) => {
   sessionLog = []; tasksCount = 0; lastSummary = '';
   abortRequested = false;
   runAllowlist.clear();
-  runAllowlistTimestamps.clear();
   currentTurnLog = null;
   persistRunAllowlist(); persistActiveChatState(); notifyProjectsChanged();
   return { ok: true, stats: stats() };
@@ -1236,9 +1308,6 @@ ipcMain.handle('agent:resetSession', async (event) => {
 
 // ============================================================
 // BOOT
-//
-// CORRIGIDO: valida chatReady() antes de waitChatReady, senao um
-// createChatWindow que falhou gera TypeError obscuro.
 // ============================================================
 async function appBoot() {
   if (!win || win.isDestroyed()) return;
@@ -1293,9 +1362,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   isQuitting = true;
   try { persistActiveChatState(); persistRunAllowlist(); projects.flush(); } catch (e) {}
-  // Limpa cache de UUIDs apagados para nao vazar entre execucoes
   SUCCEEDED_THIS_SESSION.clear();
-  runAllowlistTimestamps.clear();
   saveWindowState();
 });
 
