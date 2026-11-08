@@ -242,7 +242,7 @@ function renderChats() {
 		const item = document.createElement('button');
 		item.className = 'session-item' + (isActive ? ' active' : '');
 		item.type = 'button';
-		item.title = isActive ? 'Sessão ativa' : 'Clique para abrir (somente leitura)';
+		item.title = isActive ? 'Sessão ativa' : 'Clique para carregar esta sessão';
 		if (isActive) item.style.cursor = 'default';
 
 		item.innerHTML =
@@ -257,6 +257,7 @@ function renderChats() {
 				'<span class="session-uuid">' + escapeHtml(c.uuid) + '</span>' +
 			'</span>' +
 			'<span class="session-actions">' +
+				'<button type="button" title="Abrir em popup (somente leitura)" data-act="popup"><svg class="i"><use href="#i-external"/></svg></button>' +
 				'<button type="button" title="Renomear" data-act="rename"><svg class="i"><use href="#i-edit"/></svg></button>' +
 				'<button type="button" title="Excluir" data-act="delete"><svg class="i"><use href="#i-trash"/></svg></button>' +
 			'</span>';
@@ -266,6 +267,7 @@ function renderChats() {
 			if (act) {
 				ev.stopPropagation();
 				const action = act.getAttribute('data-act');
+				if (action === 'popup') return openPopup(c);
 				if (action === 'rename') return promptRenameChat(c);
 				if (action === 'delete') return promptDeleteChat(c);
 				return;
@@ -273,7 +275,7 @@ function renderChats() {
 			if (isActive) return;
 			const wrap = $('sessionsWrap');
 			if (wrap) wrap.open = false;
-			await openPopup(c);
+			await activateChat(c);
 		});
 
 		list.appendChild(item);
@@ -379,6 +381,22 @@ async function activateProject(projectId) {
 		try { await restoreHistory(); } catch (e) {}
 		if (res.stats) applyStats(res.stats);
 	} catch (e) { overlayError(e.message, () => activateProject(projectId)); }
+}
+
+async function activateChat(chat) {
+	if (state.running) return alert('Existe uma tarefa em andamento. Aguarde ou clique em Parar.');
+	if (!chat || !chat.uuid) return;
+	if (chat.uuid === state.activeChatUuid) return;
+	showOverlay('Trocando de sessão…', 'Carregando a sessão selecionada.');
+	try {
+		const res = await window.projectsAPI.switchChat(state.activeProjectId, chat.uuid);
+		if (!res.ok) { overlayError(res.error, () => activateChat(chat)); return; }
+		hideOverlay();
+		clearTimeline();
+		applyState(res.state);
+		try { await restoreHistory(); } catch (e) {}
+		if (res.stats) applyStats(res.stats);
+	} catch (e) { overlayError(e.message, () => activateChat(chat)); }
 }
 
 function promptRenameProject(project) {
