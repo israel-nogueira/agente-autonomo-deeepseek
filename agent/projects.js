@@ -288,7 +288,7 @@ function load() {
 
   let data = sanitizeData(raw);
 
-  if (data.projects.length === 0) {
+  if (!raw && data.projects.length === 0) {
     const p = makeEmptyProject('Projeto 01', '');
     data.projects.push(p);
     data.activeProjectId = p.id;

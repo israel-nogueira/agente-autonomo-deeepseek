@@ -6,7 +6,7 @@ const { pathToFileURL } = require('url');
 const { runAgent, pruneSessionLog } = require('./agent/loop');
 const history = require('./agent/history');
 const { compactSession } = require('./agent/compact');
-const { disableDeepSeekFeatures, resetChat, requestAbort, waitChatReady } = require('./agent/bridge');
+const { disableDeepSeekFeatures, resetChat, requestAbort, waitChatReady, resetAbortFlag } = require('./agent/bridge');
 const { killActiveProcesses, resetReadCache } = require('./agent/tools');
 const projects = require('./agent/projects');
 
@@ -43,6 +43,7 @@ const SUCCEEDED_THIS_SESSION = new Set();
 const RUN_HARD_TIMEOUT_MS = 35 * 60 * 1000;
 const NAVIGATION_TIMEOUT_MS = 20000;
 const BOOT_TIMEOUT_MS = 20000;
+const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 const RUN_ALLOWLIST_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const FAKE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
 
@@ -760,7 +761,10 @@ ipcMain.handle('projects:state', () => buildProjectsState());
 ipcMain.handle('projects:list', () => projects.listProjects());
 
 ipcMain.handle('projects:create', async (event, opts) => {
+  if (running) return { ok: false, error: 'existe uma tarefa em andamento. Aguarde ou clique em Parar.' };
+  if (busyNavigation) return { ok: false, error: 'existe uma operacao em andamento. Aguarde.' };
   try {
+    busyNavigation = true;
     const name = (opts && typeof opts.name === 'string') ? opts.name : undefined;
     const slug = (opts && typeof opts.slug === 'string') ? opts.slug : undefined;
     const projectRoot = (opts && typeof opts.projectRoot === 'string') ? opts.projectRoot : undefined;
@@ -774,6 +778,7 @@ ipcMain.handle('projects:create', async (event, opts) => {
     notifyProjectsChanged();
     return { ok: true, project: p, state: buildProjectsState(), stats: stats() };
   } catch (e) { return { ok: false, error: e.message }; }
+  finally { busyNavigation = false; }
 });
 
 ipcMain.handle('projects:rename', (event, { projectId, name }) => {
@@ -786,6 +791,7 @@ ipcMain.handle('projects:rename', (event, { projectId, name }) => {
 ipcMain.handle('projects:setRoot', (event, { projectId, projectRoot }) => {
   if (!isNonEmptyString(projectId)) return { ok: false, error: 'projectId invalido' };
   if (typeof projectRoot !== 'string') return { ok: false, error: 'projectRoot invalido' };
+  if (running) return { ok: false, error: 'existe uma tarefa em andamento. Aguarde ou clique em Parar.' };
   try { const p = projects.setProjectRoot(projectId, projectRoot); notifyProjectsChanged(); return { ok: true, project: p }; }
   catch (e) { return { ok: false, error: e.message }; }
 });
@@ -868,6 +874,7 @@ ipcMain.handle('projects:setActive', async (event, { projectId }) => {
         await chatWindow.loadURL(targetUrl);
         await waitChatReady(chatWindow, NAVIGATION_TIMEOUT_MS);
       } catch (e) {
+        notifyProjectsChanged();
         return { ok: false, error: 'DeepSeek demorou para responder: ' + e.message, stage: 'waitChatReady' };
       }
     }
@@ -886,6 +893,7 @@ ipcMain.handle('projects:listChats', (event, { projectId }) => {
 ipcMain.handle('projects:addChat', async (event, { projectId, uuid, url, label }) => {
   if (!isNonEmptyString(projectId)) return { ok: false, error: 'projectId invalido' };
   if (!isNonEmptyString(uuid)) return { ok: false, error: 'uuid invalido' };
+  if (running) return { ok: false, error: 'existe uma tarefa em andamento. Aguarde ou clique em Parar.' };
   try {
     const chat = projects.addChat(projectId, uuid, url, label);
     if (projectId === activeProjectId) {
@@ -932,11 +940,13 @@ ipcMain.handle('projects:deleteChat', async (event, { projectId, uuid, remote })
     const wantRemote = !!remote;
     const isPending = typeof uuid === 'string' && uuid.indexOf('pending-') === 0;
 
+    let prevUrl = null;
     if (isActive && chatReady()) {
       const p = projects.getProject(projectId);
       const idx = p ? p.chats.findIndex(c => c.uuid === uuid) : -1;
       const nextChat = (p && idx >= 0) ? (p.chats[idx + 1] || p.chats[idx - 1] || null) : null;
       const nextUrl = (nextChat && nextChat.url) || 'https://chat.deepseek.com/';
+      try { prevUrl = chatWindow.webContents.getURL(); } catch (e) { prevUrl = null; }
       try {
         await chatWindow.loadURL(nextUrl);
         await waitChatReady(chatWindow, NAVIGATION_TIMEOUT_MS);
@@ -947,6 +957,12 @@ ipcMain.handle('projects:deleteChat', async (event, { projectId, uuid, remote })
       if (!chatReady()) return { ok: false, error: 'janela do DeepSeek nao existe.', remoteFailed: true };
       const r = await deleteChatsRemote([{ uuid: uuid, label: uuid }]);
       if (!r.ok) {
+        if (isActive && prevUrl && chatReady()) {
+          try {
+            await chatWindow.loadURL(prevUrl);
+            await waitChatReady(chatWindow, NAVIGATION_TIMEOUT_MS);
+          } catch (e) {}
+        }
         return {
           ok: false, error: r.error || 'DeepSeek recusou apagar o chat. O registro local foi mantido.',
           remoteFailed: true, failures: r.failed || [], needsLogin: !!r.needsLogin,
@@ -993,6 +1009,7 @@ ipcMain.handle('projects:switchChat', async (event, { projectId, uuid }) => {
       await chatWindow.loadURL(targetUrl);
       await waitChatReady(chatWindow, NAVIGATION_TIMEOUT_MS);
     } catch (e) {
+      notifyProjectsChanged();
       return { ok: false, error: 'DeepSeek demorou para responder: ' + e.message, stage: 'waitChatReady' };
     }
 
@@ -1087,11 +1104,6 @@ ipcMain.handle('agent:abort', async () => {
     const n = killActiveProcesses();
     if (n > 0) console.log('[main] abort: ' + n + ' processo(s) RUN morto(s)');
   } catch (e) {}
-  const abortRunId = currentRunId;
-  setTimeout(() => {
-    if (abortRunId !== currentRunId) return;
-    if (running) running = false;
-  }, 30000);
   return { ok: true };
 });
 
@@ -1191,6 +1203,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
   const myRunId = currentRunId;
   running = true;
   abortRequested = false;
+  resetAbortFlag();
   currentTurnLog = [];
   const startedAt = Date.now();
 
@@ -1209,6 +1222,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
   try {
     const result = await runAgent({
       task, projectRoot, chatView: chatWindow, sessionLog,
+      needsPreload: (tasksCount === 0 && lastSummary.length > 0),
       onLog: sendLog, onCommand: sendCommand, onResult: sendResult, onTurn: sendTurn,
       shouldAbort: () => abortRequested,
       confirmRunBatch: confirmRunBatch,
@@ -1268,6 +1282,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
       running = false;
       abortRequested = false;
       currentTurnLog = null;
+      resetAbortFlag();
     }
   }
 });
@@ -1296,6 +1311,7 @@ ipcMain.handle('agent:compact', async (event) => {
   const myRunId = currentRunId;
   running = true;
   abortRequested = false;
+  resetAbortFlag();
 
   const watchdog = setTimeout(() => {
     if (myRunId !== currentRunId) return;
@@ -1367,7 +1383,7 @@ ipcMain.handle('agent:compact', async (event) => {
     return { ok: false, error: err.message, stats: statsAfterRun() };
   } finally {
     clearTimeout(watchdog);
-    if (myRunId === currentRunId) { running = false; abortRequested = false; }
+    if (myRunId === currentRunId) { running = false; abortRequested = false; resetAbortFlag(); }
   }
 });
 
@@ -1387,6 +1403,20 @@ ipcMain.handle('agent:resetSession', async (event) => {
 // ============================================================
 // BOOT
 // ============================================================
+async function waitChatReadyOrLogin() {
+  try {
+    await waitChatReady(chatWindow, BOOT_TIMEOUT_MS);
+    return;
+  } catch (e) {
+    if (e && e.message === 'ABORTED_BY_USER') throw e;
+    if (!chatReady()) throw e;
+  }
+  splashStatus('Faça login no DeepSeek na janela que abriu…');
+  try { chatWindow.show(); chatWindow.focus(); } catch (e) {}
+  await waitChatReady(chatWindow, LOGIN_TIMEOUT_MS);
+  try { chatWindow.hide(); } catch (e) {}
+}
+
 async function appBoot() {
   if (!win || win.isDestroyed()) return;
   splashStatus('Iniciando Agente DeepSeek…');
@@ -1399,7 +1429,7 @@ async function appBoot() {
     createChatWindow();
     if (!chatReady()) throw new Error('janela do DeepSeek nao foi criada');
     splashStatus('Conectando ao DeepSeek…');
-    await waitChatReady(chatWindow, BOOT_TIMEOUT_MS);
+    await waitChatReadyOrLogin();
     onBootSuccess();
   } catch (e) {
     console.error('[main] appBoot falhou:', e.message);
@@ -1420,7 +1450,7 @@ ipcMain.on('app:retryBoot', async () => {
   try {
     if (!chatReady()) createChatWindow();
     if (!chatReady()) throw new Error('janela do DeepSeek nao foi criada');
-    await waitChatReady(chatWindow, BOOT_TIMEOUT_MS);
+    await waitChatReadyOrLogin();
     onBootSuccess();
   } catch (e) { splashError('Falha ao iniciar: ' + e.message); }
 });

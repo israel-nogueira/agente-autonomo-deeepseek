@@ -296,7 +296,7 @@ function looksLikeStrippedTemplate(content) {
 async function validateJsSyntax(rel, content) {
   const tmp = path.join(
     os.tmpdir(),
-    'agente-check-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) + '.js'
+    'agente-check-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) + path.extname(rel).toLowerCase()
   );
 
   try {
@@ -309,6 +309,7 @@ async function validateJsSyntax(rel, content) {
     await execFileP('node', ['--check', tmp], { timeout: 10000, encoding: 'utf8' });
     return { ok: true };
   } catch (err) {
+    if (err && err.code === 'ENOENT') return { ok: true };
     const raw = ((err.stderr || '') + (err.message ? '\n' + err.message : '')).trim();
     const stripped = looksLikeStrippedTemplate(content);
     let errorLine = 0;
@@ -325,6 +326,17 @@ async function validateJsSyntax(rel, content) {
 // ============================================================
 function isJsonFile(rel) {
   return path.extname(rel).toLowerCase() === '.json';
+}
+
+function isJsoncFile(rel) {
+  const norm = String(rel || '').replace(/\\/g, '/').toLowerCase();
+  const base = norm.split('/').pop() || '';
+  if (/^tsconfig.*\.json$/.test(base)) return true;
+  if (/^jsconfig.*\.json$/.test(base)) return true;
+  if (/\.jsonc$/.test(base)) return true;
+  if (/^\.eslintrc/.test(base)) return true;
+  if (norm.split('/').indexOf('.vscode') !== -1) return true;
+  return false;
 }
 
 function isPhpFile(rel) {
@@ -464,7 +476,7 @@ async function writeOrValidate(abs, rel, content, type) {
     }
   }
   // ITEM 23: validar JSON e PHP tambem.
-  if (isJsonFile(rel)) {
+  if (isJsonFile(rel) && !isJsoncFile(rel)) {
     const v = validateJsonSyntax(content);
     if (!v.ok) {
       return { ok: false, msg: validateErrorMessage(type, rel, 'JSON_ERROR', v) };
@@ -548,6 +560,21 @@ async function walkFiles(root, relDir, out) {
 }
 
 // ============================================================
+// GLOB -> RegExp (compartilhado entre glob() e grep())
+// ============================================================
+function globToRegExp(pattern) {
+  const reStr = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*\//g, '__DOUBLE_SLASH__')
+    .replace(/\*\*/g, '__DOUBLE_STAR__')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replace(/__DOUBLE_SLASH__/g, '(?:.*\\/)?')
+    .replace(/__DOUBLE_STAR__/g, '.*');
+  return new RegExp('^' + reStr + '$');
+}
+
+// ============================================================
 // GREP
 // ============================================================
 async function grep(safe, root, arg) {
@@ -628,10 +655,20 @@ async function grep(safe, root, arg) {
     const dir = target.replace(/\/\*\*.*$/, '').replace(/\/?\*.*$/, '').replace(/\/$/, '') || '.';
     const files = [];
     await walkFiles(root, dir === '.' ? '' : dir, files);
-    if (files.length === 0) {
+    let candidates = files;
+    if (target.indexOf('*') !== -1) {
+      let targetRe;
+      try {
+        targetRe = globToRegExp(target);
+      } catch (e) {
+        targetRe = null;
+      }
+      if (targetRe) candidates = files.filter(function (f) { return targetRe.test(f); });
+    }
+    if (candidates.length === 0) {
       return { ok: false, msg: '<<<RESULT:GREP:ERROR>>>\nnenhum arquivo em: ' + dir + '\n<<<END>>>' };
     }
-    for (const f of files) {
+    for (const f of candidates) {
       if (results.length >= maxResults) { truncated = true; break; }
       await searchFile(f);
     }
@@ -655,18 +692,9 @@ async function glob(safe, root, arg) {
   const files = [];
   await walkFiles(root, '', files);
 
-  const reStr = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*\//g, '__DOUBLE_SLASH__')
-    .replace(/\*\*/g, '__DOUBLE_STAR__')
-    .replace(/\*/g, '[^/]*')
-    .replace(/\?/g, '[^/]')
-    .replace(/__DOUBLE_SLASH__/g, '(?:.*\\/)?')
-    .replace(/__DOUBLE_STAR__/g, '.*');
-
   let re;
   try {
-    re = new RegExp('^' + reStr + '$');
+    re = globToRegExp(pattern);
   } catch (e) {
     return { ok: false, msg: '<<<RESULT:GLOB:ERROR>>>\npadrao invalido\n<<<END>>>' };
   }
@@ -829,6 +857,8 @@ async function writeFile(safe, rel, content) {
   } catch (e) {
     formattedContent = content;
   }
+
+  if (!formattedContent.endsWith('\n')) formattedContent += '\n';
 
   const w = await writeOrValidate(abs, rel, formattedContent, 'WRITE');
   if (!w.ok) return w;
@@ -1037,10 +1067,14 @@ async function editFile(safe, rel, oldStrRaw, newStrRaw, oldRef) {
     newStr = lead + indent + newStr + trail;
   }
 
+  const eol = raw.indexOf('\r\n') !== -1 ? '\r\n' : '\n';
+  newStr = newStr.replace(/\r\n/g, '\n').replace(/\n/g, eol);
+  if (oldRef && /\r$/.test(oldStr) && !/\r$/.test(newStr)) newStr += '\r';
+
   function okWithDiff(extraTag) {
     const removedLines = oldStr.split('\n').slice(0, DIFF_MAX_LINES);
     const addedLines = newStr.length > 0
-      ? newStr.split('\n').slice(0, DIFF_MAX_LINES)
+      ? newStr.split(/\r?\n/).slice(0, DIFF_MAX_LINES)
       : [];
     return {
       ok: true,

@@ -123,10 +123,10 @@ function pruneSessionLog(sessionLog) {
 function detectRunAntipattern(cmd) {
   if (!cmd) return null;
   const c = cmd;
-  if (/(^|[\s;&|])(grep|rg|findstr|ag|ack)(\s|$)/i.test(c)) {
+  if (/^\s*(grep|rg|findstr|ag|ack)(\s|$)/i.test(c)) {
     return 'VOCE USOU grep/rg/findstr via RUN. Para BUSCAR TEXTO use:\n  <<<GREP:src/**:function handleLogin>>>\n  <<<GREP:index.html:slider>>>';
   }
-  if (/(^|[\s;&|])(find(\s|$)|dir\s+\/s|ls\s+-r|Get-ChildItem[^\n]*-Recurse)/i.test(c)) {
+  if (/^\s*(find(\s|$)|dir\s+\/s|ls\s+-r|Get-ChildItem[^\n]*-Recurse)/i.test(c)) {
     return 'VOCE USOU find/dir -Recurse via RUN. Para LISTAR ARQUIVOS use:\n  <<<GLOB:**/*.js>>>\n  <<<GLOB:src/**/*.ts>>>';
   }
   if (/^(cat|type|Get-Content)\s+\S+\s*$/i.test(c.trim())) {
@@ -140,9 +140,6 @@ function detectRunAntipattern(cmd) {
   }
   if (/(^|[\s;&|])(sed|awk|perl\s+-i)(\s|$)/i.test(c)) {
     return 'VOCE USOU sed/awk/perl via RUN. Use <<<EDIT>>>.';
-  }
-  if (/(^|[\s;&|])(Remove-Item|del\s|rm\s)(\s|$)/i.test(c)) {
-    return 'VOCE USOU remocao de arquivo via RUN. Se realmente quer apagar, use RUN com cuidado. Para modificar, use <<<EDIT>>>.';
   }
   if (/\$env:/i.test(c) ||
       /\b(Get|Set|Remove|New|Copy|Move|Test|Start|Stop)-[A-Z]\w+|\b(Select|Where|ForEach|Sort|Group|Measure|Write|Out|Invoke)-[A-Z]\w+|\b2>\$null\b|\bWrite-Host\b/.test(c)) {
@@ -236,6 +233,7 @@ async function runAgent(opts) {
   const runAllowlist = opts.runAllowlist;
   const onAlwaysAllow = opts.onAlwaysAllow;
   const onFirstReply = opts.onFirstReply || async function () {};
+  const needsPreload = !!opts.needsPreload;
   const log = function (msg) { onLog(msg); };
 
   log('runAgent iniciado, task=' + (task ? task.slice(0, 80) : '(vazio)'));
@@ -252,19 +250,22 @@ async function runAgent(opts) {
 
   const isFirst = sessionLog.length === 0;
   let pre = null;
-  if (isFirst) pre = await preload(projectRoot);
+  if (isFirst || needsPreload) pre = await preload(projectRoot);
 
   const startedAt = Date.now();
 
   let turn0;
   if (isFirst) {
     turn0 = buildTurn0({ task: task, tree: pre.tree, files: pre.files }) + '\n\n' + buildInitialInstruction();
+  } else if (needsPreload) {
+    turn0 = '---\n\nTAREFA: ' + task + '\n\nContexto do projeto (pre-carga do sistema; o chat foi reiniciado apos compactacao):\n\n' + pre.tree + '\n\n' + pre.files + '\n';
   } else {
     turn0 = '---\n\nTAREFA: ' + task + '\n\n(O contexto do projeto ja foi carregado em turnos anteriores. Nao peca LS/preload de novo a menos que a tarefa exija.)\n';
   }
 
   await sleep(1000);
-  sessionLog.push({ role: 'user', content: turn0, chars: turn0.length });
+  const turn0Entry = { role: 'user', content: turn0, chars: turn0.length };
+  sessionLog.push(turn0Entry);
   log('turn0 tamanho=' + turn0.length + ' chars, enviando...');
 
   const turnLog = [];
@@ -284,6 +285,8 @@ async function runAgent(opts) {
     reply = r.text;
     replyHtml = r.html;
   } catch (e) {
+    const ti = sessionLog.lastIndexOf(turn0Entry);
+    if (ti !== -1) sessionLog.splice(ti, 1);
     if (e && e.message === 'ABORTED_BY_USER') {
       log('abortado pelo usuario antes da primeira resposta');
       try { await abortStreaming(chatView); } catch (_) { /* ignora */ }
@@ -427,7 +430,7 @@ async function runAgent(opts) {
           if (cmd.type !== 'run') continue;
           const correction = detectRunAntipattern(cmd.cmd);
           if (correction) runBlocked.set(cmd, correction);
-          else if (runAllowlist && runAllowlist.has((cmd.cmd || '').trim())) runAlreadyOk.add(cmd);
+          else if (runAllowlist && runAllowlist.has((cmd.cmd || '').trim()) && !checkDestructive(cmd.cmd)) runAlreadyOk.add(cmd);
           else runToConfirm.push(cmd);
         }
 
@@ -515,7 +518,7 @@ async function runAgent(opts) {
               onResult({ id: cid, type: 'run', arg: (cmd.cmd || '').slice(0, 80), result: msg, ok: false, denied: true });
               continue;
             }
-            if (decision.always) {
+            if (decision.always && !checkDestructive(cmd.cmd)) {
               const cmdTrimmed = (cmd.cmd || '').trim();
               if (typeof onAlwaysAllow === 'function') onAlwaysAllow(cmdTrimmed);
               else if (runAllowlist) runAllowlist.add(cmdTrimmed);

@@ -1027,12 +1027,18 @@ function updateCompactBanner(s) {
 	}
 }
 
+function updateCompactButton(running) {
+	const compactBtn = $('btnCompactNow');
+	if (!compactBtn) return;
+	const hasMessages = !!(state.stats && state.stats.messages > 0);
+	compactBtn.disabled = !!running || !hasMessages;
+}
+
 function applyRunningState(running) {
 	const comp = $('composer');
 	comp.classList.toggle('working', !!running);
 	$('btnSend').disabled = !!running;
-	const compactBtn = $('btnCompactNow');
-	if (compactBtn) compactBtn.disabled = !!running;
+	updateCompactButton(running);
 	const btn = $('compactBannerBtn');
 	const msg = $('compactBannerMsg');
 	const b = $('compactBanner');
@@ -1261,15 +1267,17 @@ function showRunBatchModal(items) {
 			mainLabel.appendChild(document.createTextNode(' Gravar'));
 			row.appendChild(mainLabel);
 		} else {
-			const alwaysLabel = document.createElement('label');
-			alwaysLabel.className = 'allow';
-			const alwaysCb = document.createElement('input');
-			alwaysCb.type = 'checkbox';
-			alwaysCb.setAttribute('data-role', 'always');
-			alwaysCb.setAttribute('data-idx', String(i));
-			alwaysLabel.appendChild(alwaysCb);
-			alwaysLabel.appendChild(document.createTextNode(' Sempre permitir'));
-			row.appendChild(alwaysLabel);
+			if (!item.danger) {
+				const alwaysLabel = document.createElement('label');
+				alwaysLabel.className = 'allow';
+				const alwaysCb = document.createElement('input');
+				alwaysCb.type = 'checkbox';
+				alwaysCb.setAttribute('data-role', 'always');
+				alwaysCb.setAttribute('data-idx', String(i));
+				alwaysLabel.appendChild(alwaysCb);
+				alwaysLabel.appendChild(document.createTextNode(' Sempre permitir'));
+				row.appendChild(alwaysLabel);
+			}
 
 			const mainLabel2 = document.createElement('label');
 			mainLabel2.className = 'allow';

@@ -52,7 +52,7 @@ function parseResponse(text) {
       pendingText += text.slice(pos, markerStart);
     }
 
-    if (tag === 'READ' || tag === 'LS' || tag === 'TREE' || tag === 'GLOB' || tag === 'GREP') {
+    if (tag === 'READ' || tag === 'LS' || tag === 'GLOB' || tag === 'GREP') {
       flushPendingText();
       segments.push({ type: tag.toLowerCase(), arg: arg });
       pos = markerEnd;
@@ -156,7 +156,7 @@ function findNextEnd(text, from) {
   return m ? { index: m.index, len: m[0].length } : null;
 }
 
-const BLOCK_OPEN_RE = /<<<(?:WRITE|EDIT|READ|LS|TREE|GLOB|GREP|RUN|SAY|DONE)(?::[^>]*)?>>>/g;
+const BLOCK_OPEN_RE = /<<<(?:WRITE|EDIT|READ|LS|GLOB|GREP|RUN|SAY|DONE)(?::[^>]*)?>>>/g;
 
 function findNextBlockMarker(text, from) {
   BLOCK_OPEN_RE.lastIndex = from;
