@@ -193,6 +193,7 @@ function applyState(st) {
 	renderProjects();
 	renderChats();
 	renderHeader();
+	updateComposerState(state.running);
 }
 
 function renderProjects() {
@@ -1034,10 +1035,16 @@ function updateCompactButton(running) {
 	compactBtn.disabled = !!running || !hasMessages;
 }
 
+function updateComposerState(running) {
+	const noProject = !state.activeProjectId;
+	$('messageInput').disabled = noProject;
+	$('btnSend').disabled = !!running || noProject;
+}
+
 function applyRunningState(running) {
 	const comp = $('composer');
 	comp.classList.toggle('working', !!running);
-	$('btnSend').disabled = !!running;
+	updateComposerState(running);
 	updateCompactButton(running);
 	const btn = $('compactBannerBtn');
 	const msg = $('compactBannerMsg');
