@@ -95,7 +95,16 @@ function showDiag(msg, ok, opts) {
 }
 
 function clearPendingTimers() {
-	for (const [, entry] of pendingCommands) clearTimeout(entry.timer);
+	for (const [, entry] of pendingCommands) {
+		clearTimeout(entry.timer);
+		const ecard = entry.card && entry.card.querySelector('.event-card');
+		if (ecard && ecard.classList.contains('is-pending')) {
+			ecard.classList.remove('is-pending');
+			ecard.classList.add('is-cancel');
+			const desc = ecard.querySelector('.event-desc');
+			if (desc) desc.textContent = 'Interrompido (sem resultado)';
+		}
+	}
 	pendingCommands.clear();
 }
 
@@ -904,7 +913,7 @@ function makeEventCard(cmdId, type) {
 	const card = document.createElement('div');
 	card.className = 'activity';
 	const details = document.createElement('details');
-	details.className = 'event-card';
+	details.className = 'event-card is-pending';
 	details.dataset.cmdId = cmdId;
 	details.dataset.type = type;
 	const summary = document.createElement('summary');
@@ -930,13 +939,7 @@ function addCommandCard(cmd) {
 	const title = card.querySelector('.event-title');
 	title.innerHTML = eventTitleForCmd(cmd);
 	appendNode(card);
-	pendingCommands.set(id, { card, timer: setTimeout(() => {
-		const entry = pendingCommands.get(id);
-		if (!entry) return;
-		const desc = entry.card.querySelector('.event-desc');
-		if (desc) desc.textContent = '(sem resposta do executor)';
-		pendingCommands.delete(id);
-	}, 60000) });
+	pendingCommands.set(id, { card });
 	return card;
 }
 
@@ -969,6 +972,8 @@ function renderRunStreams(result) {
 }
 
 function attachResultToCard(card, result) {
+	card.classList.remove('is-pending');
+	card.classList.add(result.ok ? 'is-ok' : 'is-err');
 	const desc = card.querySelector('.event-desc');
 	const detail = card.querySelector('.event-detail');
 	const trailing = card.querySelector('.event-trailing');

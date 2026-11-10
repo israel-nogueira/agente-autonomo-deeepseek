@@ -93,6 +93,37 @@ function prepareHtmlForChat(html) {
   return s.trim();
 }
 
+// Fatia o HTML da resposta nas posicoes dos comandos, na ordem em que
+// aparecem. Devolve um array com cmdCount + 1 trechos de HTML ja limpo
+// (qualquer posicao pode ser ''): o trecho [i] vem ANTES do comando i e o
+// ultimo vem DEPOIS do ultimo comando. Devolve null se a quantidade de
+// comandos achados no HTML for diferente de cmdCount (o chamador faz fallback).
+function splitHtmlByCommands(html, cmdCount) {
+  let s = stripDeepSeekWrappers(String(html || ''));
+  s = s.replace(/<\/?span\b[^>]*>/gi, '');
+  s = s.replace(/&lt;&lt;&lt;\s*(WRITE|RUN|EDIT|SAY|OLD_REF|OLD|NEW|READ|LS|TREE|GLOB|GREP|DONE|END)\b([^<]*?)&gt;&gt;&gt;/gi, '<<<$1$2>>>');
+
+  const cutRe = /<<<\s*(?:WRITE|RUN|EDIT)\b[^>]*>>>[\s\S]*?<<<\s*END\s*>>>|<<<\s*(?:READ|LS|GLOB|GREP)\b[^>]*>>>/gi;
+  const chunks = [];
+  let last = 0;
+  let m;
+  while ((m = cutRe.exec(s)) !== null) {
+    chunks.push(s.slice(last, m.index));
+    last = m.index + m[0].length;
+  }
+  chunks.push(s.slice(last));
+  if (chunks.length - 1 !== cmdCount) return null;
+
+  return chunks.map(function (c) {
+    let h = stripCommands(c).trim();
+    h = h.replace(/^(?:\s*<\/[a-z0-9]+>)+/i, '').replace(/(?:<(?:p|div)\b[^>]*>\s*)+$/i, '');
+    h = h.replace(/<p\b[^>]*>\s*<\/p>/gi, '').trim();
+    const visible = h.replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim() !== '' ||
+      /<(?:hr|img|pre|table|ul|ol|blockquote|h[1-6])\b/i.test(h);
+    return visible ? h : '';
+  });
+}
+
 // ============================================================
 // Abort
 // ============================================================
@@ -997,4 +1028,5 @@ module.exports = {
   prepareHtmlForChat,
   decodeEntities,
   stripCommands,
+  splitHtmlByCommands,
 };

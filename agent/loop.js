@@ -1,7 +1,7 @@
 // loop.js
 const fs = require('fs/promises');
 const path = require('path');
-const { ask, abortStreaming, attachFile, prepareHtmlForChat } = require('./bridge');
+const { ask, abortStreaming, attachFile, prepareHtmlForChat, splitHtmlByCommands } = require('./bridge');
 const { parseResponse, parseReadArg } = require('./parser');
 const { execute, resetReadCache, checkDestructive, getFileContent, classifyPath } = require('./tools');
 const { buildTurn0, buildResultMessage } = require('./protocol');
@@ -359,25 +359,45 @@ async function runAgent(opts) {
         continue;
       }
 
-      // Renderiza os textSegments (secao de texto solto) no chat do usuario.
-      // O parser gera { type: 'text', html: ... }. Mandamos pro renderer
-      // via onResult({ type: 'message', html: ... }).
-      const cleanHtml = prepareHtmlForChat(replyHtml);
-      if (cleanHtml) {
-        try {
-          onResult({
-            id: 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
-            type: 'message',
-            html: cleanHtml,
-            ok: true,
-          });
-        } catch (e) { /* ignora */ }
-      }
-
       const workCmds = segments.filter(function (s) {
         return s.type !== 'text' && s.type !== 'done' && s.type !== 'truncated';
       });
       const hasDone = segments.some(function (s) { return s.type === 'done'; });
+
+      // Envia tudo pra tela de uma vez: texto e cards pendentes, na ordem em
+      // que aparecem na resposta. Cada comando ganha o id aqui; a execucao
+      // mais abaixo so reporta o resultado usando o mesmo id.
+      const cmdIds = new Map();
+      for (const c of workCmds) cmdIds.set(c, newCommandId());
+
+      const emitMessage = function (html) {
+        if (!html) return;
+        try {
+          onResult({
+            id: 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+            type: 'message',
+            html: html,
+            ok: true,
+          });
+        } catch (e) { /* ignora */ }
+      };
+      const emitPending = function (c) {
+        try {
+          onCommand({ id: cmdIds.get(c), type: c.type, arg: c.arg || c.path || c.cmd || '', cmd: c });
+        } catch (e) { /* ignora */ }
+      };
+
+      const chunks = splitHtmlByCommands(replyHtml, workCmds.length);
+      if (chunks) {
+        for (let i = 0; i < workCmds.length; i++) {
+          emitMessage(chunks[i]);
+          emitPending(workCmds[i]);
+        }
+        emitMessage(chunks[workCmds.length]);
+      } else {
+        emitMessage(prepareHtmlForChat(replyHtml));
+        for (const c of workCmds) emitPending(c);
+      }
 
       if (workCmds.length === 0 && !hasDone) {
         const r = await askAndLog('[Lembrete: emita comandos <<< >>> ou <<<DONE>>>.]', false);
@@ -501,9 +521,8 @@ async function runAgent(opts) {
         for (const cmd of workCmds) {
           if (cmd.type === 'run' && runBlocked.has(cmd)) {
             const msg = '<<<RESULT:RUN:ERROR>>>\n' + runBlocked.get(cmd) + '\n<<<END>>>';
-            const cid = newCommandId();
+            const cid = cmdIds.get(cmd);
             results.push({ ok: false, msg });
-            onCommand({ id: cid, type: 'run', arg: (cmd.cmd || '').slice(0, 80), cmd: cmd, blocked: true });
             onResult({ id: cid, type: 'run', arg: (cmd.cmd || '').slice(0, 80), result: msg, ok: false, blocked: true });
             continue;
           }
@@ -512,9 +531,8 @@ async function runAgent(opts) {
             const decision = batchDecisions.get(cmd);
             if (!decision || !decision.approved) {
               const msg = '<<<RESULT:RUN:ERROR>>>\nNEGADO pelo usuario.\n<<<END>>>';
-              const cid = newCommandId();
+              const cid = cmdIds.get(cmd);
               results.push({ ok: false, msg });
-              onCommand({ id: cid, type: 'run', arg: (cmd.cmd || '').slice(0, 80), cmd: cmd, denied: true });
               onResult({ id: cid, type: 'run', arg: (cmd.cmd || '').slice(0, 80), result: msg, ok: false, denied: true });
               continue;
             }
@@ -533,11 +551,10 @@ async function runAgent(opts) {
               const relPath = (cmd.path || '').trim();
               const errType = (cmd.type === 'write') ? 'WRITE' : 'EDIT';
               const msg = '<<<RESULT:' + errType + ':' + relPath + ':ERROR>>>\nNEGADO pelo usuario.\n<<<END>>>';
-              const cid = newCommandId();
+              const cid = cmdIds.get(cmd);
               // ITEM 11 (achado 1): marca denied:true para nao contar como
               // falha de EDIT em editFailCounts/totalEditFails.
               results.push({ ok: false, msg: msg, denied: true });
-              onCommand({ id: cid, type: cmd.type, arg: relPath, cmd: cmd, denied: true });
               onResult({ id: cid, type: cmd.type, arg: relPath, result: msg, ok: false, denied: true });
               continue;
             }
@@ -546,8 +563,7 @@ async function runAgent(opts) {
 
           if (cmd.type === 'read') anyRead = true;
 
-          const cid = newCommandId();
-          onCommand({ id: cid, type: cmd.type, arg: cmd.arg || cmd.path || cmd.cmd || '', cmd: cmd });
+          const cid = cmdIds.get(cmd);
           try {
             let r = await execute(cmd, projectRoot);
 
@@ -700,3 +716,7 @@ async function runAgent(opts) {
 }
 
 module.exports = { runAgent, pruneSessionLog, SESSION_LOG_MAX_CHARS };
+
+//--------------------------------------
+//-------------- LOOP.js ---------------
+//--------------------------------------

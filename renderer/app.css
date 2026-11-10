@@ -257,6 +257,16 @@ button{cursor:pointer}
 .event-trailing{display:flex;gap:9px;align-items:center;color:#7e91aa;font-size:10px}
 .event-trailing .i{width:14px;height:14px;transition:transform .15s}
 .event-card[open] .event-trailing .i{transform:rotate(180deg)}
+.event-card.is-pending .event-icon{position:relative}
+.event-card.is-pending .event-icon .i{opacity:.35}
+.event-card.is-pending .event-icon::after{content:'';position:absolute;inset:-1px;border-radius:50%;border:2px solid transparent;border-top-color:#6aa2ff;animation:ev-spin .8s linear infinite}
+@keyframes ev-spin{to{transform:rotate(360deg)}}
+.event-card.is-ok{border-color:#1f6f43}
+.event-card.is-ok .event-icon{background:#14532d;border-color:#1f6f43;color:#bbf7d0}
+.event-card.is-err{border-color:#8b2c2c}
+.event-card.is-err .event-icon{background:#7f1d1d;border-color:#8b2c2c;color:#fecaca}
+.event-card.is-cancel{opacity:.7}
+.event-card.is-cancel .event-icon{border-color:#36475f}
 .event-detail{border-top:1px solid #2a3748;background:#0e1621;padding:12px 15px;font:11px/1.75 var(--mono);color:#bac7d8;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
 .event-detail.streams{display:flex;flex-direction:column;gap:10px}
 .stream-block{border:1px solid #252a32;border-radius:7px;padding:8px 10px;background:#0a0d12}
