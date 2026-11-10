@@ -1127,6 +1127,8 @@ function updateComposerState(running) {
 function applyRunningState(running) {
 	const comp = $('composer');
 	comp.classList.toggle('working', !!running);
+	const workDots = $('workDots');
+	if (workDots) workDots.style.display = running ? 'flex' : 'none';
 	updateComposerState(running);
 	updateCompactButton(running);
 	const btn = $('compactBannerBtn');
@@ -1164,8 +1166,40 @@ function updateLiveStatus(text) {
 }
 
 function removeLiveStatus() {
+	removeStreamBox();
 	const el = document.querySelector('.live-status');
 	if (el) el.remove();
+}
+
+function removeStreamBox() {
+	const el = document.querySelector('#chatContent .stream-box');
+	if (el) el.remove();
+}
+
+function updateStreamBox(text) {
+	let box = document.querySelector('#chatContent .stream-box');
+	if (typeof text !== 'string' || !text.trim()) { if (box) box.remove(); return; }
+	const clean = text.replace(/<<<[\s\S]*?>>>/g, '').replace(/<<<[\s\S]*$/, '').replace(/<{1,2}$/, '').trim();
+	if (!clean) { if (box) box.remove(); return; }
+	let html = null;
+	if (window.markdownAPI) { try { html = window.markdownAPI.parse(clean); } catch (e) {} }
+	if (typeof html !== 'string') html = '<p>' + escapeHtml(clean) + '</p>';
+	const doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
+	const root = doc.body.firstChild;
+	root.querySelectorAll('script, iframe, object, embed, style, link').forEach(function (n) { n.remove(); });
+	root.querySelectorAll('*').forEach(function (n) {
+		Array.from(n.attributes).forEach(function (a) { if (/^on/i.test(a.name)) n.removeAttribute(a.name); });
+	});
+	const t = $('timeline');
+	const nearBottom = !t || (t.scrollHeight - t.scrollTop - t.clientHeight) < 80;
+	if (!box) {
+		box = document.createElement('div');
+		box.className = 'msg-row stream-box';
+		box.innerHTML = '<div class="stream-text"></div>';
+		appendNode(box);
+	}
+	box.querySelector('.stream-text').innerHTML = root.innerHTML;
+	if (nearBottom) scrollToBottom();
 }
 
 function applyChatWindowState(visible) {
@@ -1249,6 +1283,9 @@ async function executeRun(task, opts) {
 				}
 			}
 		}
+		if (res.ok && res.result && Array.isArray(res.result.touchedFiles) && res.result.touchedFiles.length > 0) {
+			appendCommitButtons(projectRoot, project, res.result.touchedFiles, opts.originalTask || task);
+		}
 		if (res.stats) applyStats(res.stats);
 		if (res.state) applyState(res.state);
 	} catch (e) {
@@ -1271,6 +1308,48 @@ async function runTask() {
 	const projectRoot = project ? project.projectRoot : '';
 	if (!projectRoot) return alert('Defina a pasta raiz do projeto (menu do projeto → Alterar pasta raiz).');
 	await executeRun(t, { displayUserText: t });
+}
+
+async function appendCommitButtons(projectRoot, project, files, taskText) {
+	if (!project || !projectRoot || !project.slug) return;
+	let st = null;
+	try { st = await window.agentAPI.gitStatus(projectRoot, project.slug); } catch (e) { return; }
+	if (!st || st.state !== 'ok') return;
+	const wraps = document.querySelectorAll('#chatContent .review-btn-wrap');
+	const wrap = wraps.length ? wraps[wraps.length - 1] : null;
+	if (!wrap || wrap.querySelector('.commit-btn')) return;
+	const reviewBtn = wrap.querySelector('.review-btn');
+	if (!reviewBtn) return;
+	const commitBtn = document.createElement('button');
+	commitBtn.className = 'review-btn commit-btn';
+	commitBtn.type = 'button';
+	commitBtn.textContent = '✅ Commitar';
+	const skipBtn = document.createElement('button');
+	skipBtn.className = 'review-btn skip-commit-btn';
+	skipBtn.type = 'button';
+	skipBtn.textContent = 'Não por enquanto';
+	reviewBtn.after(commitBtn, skipBtn);
+	skipBtn.addEventListener('click', () => { commitBtn.remove(); skipBtn.remove(); });
+	commitBtn.addEventListener('click', async () => {
+		if (state.running) return;
+		commitBtn.disabled = true;
+		skipBtn.disabled = true;
+		commitBtn.textContent = '⏳ Commitando…';
+		try {
+			const r = await window.agentAPI.gitCommit(projectRoot, project.slug, files, taskText);
+			if (r && r.ok) {
+				commitBtn.textContent = '✅ Commit feito' + (r.hash ? ' (' + r.hash + ')' : '');
+				skipBtn.remove();
+				return;
+			}
+			showDiag('Falha no commit: ' + ((r && r.error) || 'erro desconhecido'), false);
+		} catch (e) {
+			showDiag('Erro no commit: ' + e.message, false);
+		}
+		commitBtn.disabled = false;
+		skipBtn.disabled = false;
+		commitBtn.textContent = '✅ Commitar';
+	});
 }
 
 async function requestReview(data) {
@@ -1670,6 +1749,7 @@ window.agentAPI.onResult((r) => {
 });
 
 window.agentAPI.onStats((s) => { applyStats(s); });
+window.agentAPI.onStream((d) => { updateStreamBox(d && d.text); });
 window.agentAPI.onChatWindowState((data) => { applyChatWindowState(data.visible); });
 window.agentAPI.onRunBatchRequest((data) => {
 	if (!data || !Array.isArray(data.items)) return;
@@ -1710,6 +1790,7 @@ async function persistTimeline() {
     if (node.id === 'emptyState') continue;
     if (node.classList.contains('compacting')) continue;
     if (node.classList.contains('live-status')) continue;
+    if (node.classList.contains('stream-box')) continue;
     if (node.classList.contains('history-more')) continue;
 
     let kind = 'assistant';

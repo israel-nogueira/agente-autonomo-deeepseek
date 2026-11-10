@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('agentAPI', {
   abort: () => ipcRenderer.invoke('agent:abort'),
   gitStatus: (projectRoot, slug) => ipcRenderer.invoke('git:status', { projectRoot, slug }),
   gitCreateBranch: (projectRoot, slug) => ipcRenderer.invoke('git:createBranch', { projectRoot, slug }),
+  gitCommit: (projectRoot, slug, files, task) => ipcRenderer.invoke('git:commit', { projectRoot, slug, files, task }),
   compact: () => ipcRenderer.invoke('agent:compact'),
   resetSession: () => ipcRenderer.invoke('agent:resetSession'),
   stats: () => ipcRenderer.invoke('agent:stats'),
@@ -22,6 +23,7 @@ contextBridge.exposeInMainWorld('agentAPI', {
   onRunBatchRequest: (cb) => ipcRenderer.on('run:batch-request', (_, data) => cb(data)),
   sendRunBatchResponse: (data) => ipcRenderer.send('run:batch-response', data),
   onStats: (cb) => ipcRenderer.on('agent:stats', (_, data) => cb(data)),
+  onStream: (cb) => ipcRenderer.on('agent:stream', (_, data) => cb(data)),
 });
 
 // marked@4 e' CJS: require('marked') funciona direto no preload.

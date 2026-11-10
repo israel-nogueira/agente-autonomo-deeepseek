@@ -1,6 +1,7 @@
 // agent/gitguard.js
 // Checagens de Git (somente local, sem rede). A unica escrita e criar a branch do projeto.
 const { execFile } = require('child_process');
+const path = require('path');
 
 const BRANCH_SUFFIX = '_agente_local';
 
@@ -52,4 +53,30 @@ async function createBranch(projectRoot, slug) {
   return { ok: true, branch: st.expected };
 }
 
-module.exports = { branchNameFor, gitStatus, createBranch };
+async function commitFiles(projectRoot, slug, files, taskText) {
+  const st = await gitStatus(projectRoot, slug);
+  if (st.state !== 'ok') {
+    return { ok: false, error: 'commit so e permitido na branch "' + st.expected + '" (estado: ' + st.state + ').' };
+  }
+  const list = [];
+  const raw = Array.isArray(files) ? files : [];
+  for (const f of raw) {
+    if (typeof f !== 'string' || !f.trim()) continue;
+    const rel = path.relative(projectRoot, path.resolve(projectRoot, f.trim()));
+    if (!rel || rel.indexOf('..') === 0 || path.isAbsolute(rel)) {
+      return { ok: false, error: 'arquivo fora do projeto: ' + f };
+    }
+    list.push(rel);
+  }
+  if (!list.length) return { ok: false, error: 'nenhum arquivo para commitar.' };
+  const clean = String(taskText || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const msg = 'agente: ' + (clean || 'alteracoes');
+  const add = await git(projectRoot, ['add', '--'].concat(list));
+  if (!add.ok) return { ok: false, error: add.err || 'falha no git add' };
+  const c = await git(projectRoot, ['commit', '-m', msg, '--'].concat(list));
+  if (!c.ok) return { ok: false, error: c.out || c.err || 'falha no git commit' };
+  const h = await git(projectRoot, ['rev-parse', '--short', 'HEAD']);
+  return { ok: true, hash: h.ok ? h.out : '' };
+}
+
+module.exports = { branchNameFor, gitStatus, createBranch, commitFiles };

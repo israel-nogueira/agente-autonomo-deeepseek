@@ -327,6 +327,11 @@ button{cursor:pointer}
 .stop:hover{background:#4a2630;border-color:#9a4d5a}
 .composer.working .send{display:none}
 .composer.working .stop{display:flex}
+.work-dots{display:flex;justify-content:center;gap:7px;margin:0 auto 10px}
+.work-dots span{width:8px;height:8px;border-radius:50%;background:#4f9dff;animation:work-pulse 1.2s ease-in-out infinite}
+.work-dots span:nth-child(2){animation-delay:.2s}
+.work-dots span:nth-child(3){animation-delay:.4s}
+@keyframes work-pulse{0%,80%,100%{opacity:.25;transform:scale(.7)}40%{opacity:1;transform:scale(1)}}
 
 /* Modais */
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -716,4 +721,56 @@ button{cursor:pointer}
   border-color:#5477b4;
   background:#192842;
   color:#e9f1ff;
+}
+
+/* Stream ao vivo: texto do modelo enquanto escreve (discreto) */
+.stream-box {
+  display: flex;
+  flex-direction: column-reverse;
+  margin-left: 41px;
+  padding: 2px 0 2px 12px;
+  max-height: 200px;
+  overflow: hidden;
+  min-width: 0;
+  opacity: 0.55;
+  border-left: 2px solid rgba(148, 186, 255, 0.25);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 28px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 28px);
+}
+.stream-box .stream-text {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #9cb1d0;
+  word-break: break-word;
+}
+.stream-box .stream-text p {
+  margin: 0 0 6px;
+  font-size: inherit;
+  line-height: inherit;
+}
+.stream-box .stream-text h1,
+.stream-box .stream-text h2,
+.stream-box .stream-text h3,
+.stream-box .stream-text h4 {
+  margin: 6px 0 4px;
+  font-size: inherit;
+  line-height: inherit;
+}
+.stream-box .stream-text ul,
+.stream-box .stream-text ol {
+  margin: 4px 0 6px 18px;
+  font-size: inherit;
+  line-height: inherit;
+}
+.stream-box .stream-text pre {
+  margin: 4px 0 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow: hidden;
+}
+.stream-box .stream-text code {
+  font-size: 11px;
 }

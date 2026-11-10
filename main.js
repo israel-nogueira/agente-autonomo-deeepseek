@@ -1113,6 +1113,14 @@ ipcMain.handle('git:createBranch', async (event, { projectRoot, slug }) => {
   catch (e) { return { ok: false, error: e.message }; }
 });
 
+ipcMain.handle('git:commit', async (event, { projectRoot, slug, files, task }) => {
+  if (running) return { ok: false, error: 'existe uma tarefa em andamento. Aguarde ou clique em Parar.' };
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio' };
+  if (typeof slug !== 'string' || !slug.trim()) return { ok: false, error: 'slug vazio' };
+  try { return await gitguard.commitFiles(projectRoot, slug, files, String(task || '')); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
 // ============================================================
 // ABORT
 // ============================================================
@@ -1196,6 +1204,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
   const sendLog = (msg) => { try { event.sender.send('agent:log', msg); } catch (e) {} };
   const sendCommand = (cmd) => { try { event.sender.send('agent:command', cmd); } catch (e) {} };
   const sendResult = (r) => { try { event.sender.send('agent:result', r); } catch (e) {} };
+  const sendStream = (text) => { try { event.sender.send('agent:stream', { text: text }); } catch (e) {} };
   const sendTurn = (turnLog) => { currentTurnLog = turnLog; try { event.sender.send('agent:stats', statsLive()); } catch (e) {} };
 
   if (typeof task !== 'string' || !task.trim()) return { ok: false, error: 'task vazia', stats: stats() };
@@ -1266,7 +1275,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
     const result = await runAgent({
       task, projectRoot, chatView: chatWindow, sessionLog,
       needsPreload: (tasksCount === 0 && lastSummary.length > 0),
-      onLog: sendLog, onCommand: sendCommand, onResult: sendResult, onTurn: sendTurn,
+      onLog: sendLog, onCommand: sendCommand, onResult: sendResult, onTurn: sendTurn, onStream: sendStream,
       shouldAbort: () => abortRequested,
       confirmRunBatch: confirmRunBatch,
       runAllowlist: runAllowlist,

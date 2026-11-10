@@ -702,7 +702,7 @@ async function sendPrompt(chatView, prompt) {
 // ============================================================
 // waitForReply — devolve { text, html }
 // ============================================================
-async function waitForReply(chatView, timeoutMs, beforeCount, beforeText) {
+async function waitForReply(chatView, timeoutMs, beforeCount, beforeText, onProgress) {
   timeoutMs = timeoutMs || 240000;
   if (typeof beforeText !== 'string') beforeText = '';
   const t0 = Date.now();
@@ -735,6 +735,7 @@ async function waitForReply(chatView, timeoutMs, beforeCount, beforeText) {
   const POLL_MS = 700;
   let lastText = null;
   let lastHtml = '';
+  let lastProgressText = null;
   let stableCount = 0;
   let stopSeenMissing = 0;
   let continueClicks = 0;
@@ -779,6 +780,11 @@ async function waitForReply(chatView, timeoutMs, beforeCount, beforeText) {
         currentHtml = typeof rawResult.html === 'string' ? rawResult.html : '';
       }
     } catch (e) { /* ignora */ }
+
+    if (typeof onProgress === 'function' && currentText.length > 0 && currentText !== lastProgressText) {
+      lastProgressText = currentText;
+      try { onProgress(currentText); } catch (e) { /* ignora */ }
+    }
 
     if (currentText === lastText && currentText.length > 0) stableCount++;
     else { stableCount = 0; lastText = currentText; lastHtml = currentHtml; }
@@ -834,7 +840,7 @@ async function getLastReply(chatView, extraCountBefore) {
 // ============================================================
 // ASK — devolve { text, html }
 // ============================================================
-async function ask(chatView, prompt) {
+async function ask(chatView, prompt, onProgress) {
   if (currentAbortRequested) throw new Error('ABORTED_BY_USER');
 
   let beforeCount = 0;
@@ -854,7 +860,7 @@ async function ask(chatView, prompt) {
 
   try {
     await sendPrompt(chatView, prompt);
-    const r = await waitForReply(chatView, 240000, beforeCount, beforeText);
+    const r = await waitForReply(chatView, 240000, beforeCount, beforeText, onProgress);
     const lr = await getLastReply(chatView, beforeCount);
     return { text: r.text || lr.text, html: r.html || lr.html };
   } catch (e) {

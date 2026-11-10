@@ -228,6 +228,7 @@ async function runAgent(opts) {
   const onCommand = opts.onCommand || function () {};
   const onResult = opts.onResult || function () {};
   const onTurn = opts.onTurn || function () {};
+  const onStream = opts.onStream || function () {};
   const shouldAbort = opts.shouldAbort || function () { return false; };
   const confirmRunBatch = opts.confirmRunBatch;
   const runAllowlist = opts.runAllowlist;
@@ -291,8 +292,10 @@ async function runAgent(opts) {
   }
 
   let reply, replyHtml;
+  let idleReplies = 0;
   try {
-    const r = await ask(chatView, turn0);
+    const r = await ask(chatView, turn0, onStream);
+    try { onStream(null); } catch (e) { /* ignora */ }
     reply = r.text;
     replyHtml = r.html;
   } catch (e) {
@@ -324,7 +327,8 @@ async function runAgent(opts) {
   async function askAndLog(msg, persistent) {
     turnLog.push({ role: 'user', content: msg, chars: msg.length });
     if (persistent) sessionLog.push({ role: 'user', content: msg, chars: msg.length });
-    const r = await ask(chatView, msg);
+    const r = await ask(chatView, msg, onStream);
+    try { onStream(null); } catch (e) { /* ignora */ }
     const text = r.text;
     turnLog.push({ role: 'assistant', content: text, chars: text.length });
     if (persistent) sessionLog.push({ role: 'assistant', content: text, chars: text.length });
@@ -410,11 +414,13 @@ async function runAgent(opts) {
         for (const c of workCmds) emitPending(c);
       }
 
+      if (workCmds.length > 0) idleReplies = 0;
       if (workCmds.length === 0 && !hasDone) {
-        if ((reply || '').trim()) {
+        idleReplies++;
+        if (idleReplies > 2) {
           hasDone = true;
         } else {
-          const r = await askAndLog('[Lembrete: emita comandos <<< >>> ou <<<DONE>>>.]', false);
+          const r = await askAndLog('[Voce terminou? Se SIM, responda somente <<<DONE>>>. Se ainda precisa ver algo (arquivo, trecho, busca, saida de comando), EMITA o comando agora (READ, GREP, GLOB, LS ou RUN) em vez de apenas descrever que falta.]', false);
           reply = r.text;
           replyHtml = r.html || r.text;
           turn++;
