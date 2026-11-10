@@ -123,8 +123,8 @@ const SYSTEM_PROMPT = [
 "5. Para MODIFICAR/CRIAR: use EDIT ou WRITE. NAO use RUN com sed/powershell.",
 "6b. LEITURA: use <<<READ:caminho>>> (inteiro) SEMPRE. Nao fragmente.",
 "7. Se voce emitiu DONE, ele deve vir SOZINHO - sem EDIT/WRITE na mesma resposta.",
-"7b. Se voce fez um EDIT/WRITE com sucesso e a tarefa terminou, emita",
-"    <<<DONE>>> SOZINHO na proxima resposta. NAO repita o EDIT.",
+"7b. Se voce fez um EDIT/WRITE com sucesso e a tarefa terminou, responda",
+"    so com texto (resumo curto), sem comandos. NAO repita o EDIT. <<<DONE>>> e opcional.",
 "8. Se o EDIT falhar com BLOQUEADO, escolha ancora FORA de comentario.",
 "9. ATENCAO: ambiente WINDOWS, shell padrao cmd.exe — NAO PowerShell.",
 "   grep, head, tail, sed, awk, ls, cat, rm NAO existem.",
@@ -161,7 +161,7 @@ const SYSTEM_PROMPT = [
 "  3. Planeje as edicoes.",
 "  4. Emita <<<EDIT:caminho>>> com OLD_REF ou <<<WRITE:caminho>>>.",
 "  5. Se precisar rodar testes, use <<<RUN>>>npm test<<<END>>>.",
-"  6. Emita <<<DONE>>> SOZINHO quando terminar.",
+"  6. Quando terminar, responda so com texto (sem comandos). <<<DONE>>> e opcional.",
 "",
 "EXEMPLOS",
 "",
@@ -283,19 +283,16 @@ function buildResultMessage(results) {
     ? '\n\n[SYNTAX_ERROR: seu codigo nao foi gravado. Se a mensagem fala em "crase arrancada", REESCREVA o arquivo inteiro sem nenhuma crase.]'
     : '';
 
-  const runError = results.some(function (r) {
-    return r && r.msg && r.msg.indexOf('<<<RESULT:RUN:') === 0 && r.msg.indexOf(':ERROR>>>') !== -1;
+  const runResults = results.filter(function (r) {
+    return r && r.msg && r.msg.indexOf('<<<RESULT:RUN:') === 0;
   });
+  const lastRun = runResults.length ? runResults[runResults.length - 1] : null;
+  const runError = !!(lastRun && lastRun.msg.indexOf(':ERROR>>>') !== -1);
   const runExtra = runError
     ? '\n\n[O RUN falhou. Leia o stderr com atencao. NAO repita o mesmo comando. Lembre: o shell e cmd.exe, nao PowerShell.]'
     : '';
 
-  const hasSuccess = results.some(function (r) { return r && r.ok; });
-  const doneExtra = hasSuccess
-    ? '\n\n[Se a tarefa terminou, emita <<<DONE>>> SOZINHO na proxima resposta.]'
-    : '';
-
-  return parts + extra + editExtra + refExpiredExtra + contentChangedExtra + syntaxExtra + runExtra + doneExtra + '\n\n[Lembrete: use OLD_REF em vez de copiar OLD. Emita <<<DONE>>> SOZINHO se terminou. Nao fragmente READ - leia o arquivo inteiro.]';
+  return parts + extra + editExtra + refExpiredExtra + contentChangedExtra + syntaxExtra + runExtra + '\n\n[Lembrete: use OLD_REF em vez de copiar OLD. Nao fragmente READ - leia o arquivo inteiro.]';
 }
 
 module.exports = { SYSTEM_PROMPT, buildTurn0, buildResultMessage, MAX_READ_CHARS_IN_RESULT };

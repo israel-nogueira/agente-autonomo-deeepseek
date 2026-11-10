@@ -279,6 +279,17 @@ async function runAgent(opts) {
     if (rel) touchedFilesSet.add(rel);
   }
 
+  async function existingTouched() {
+    const out = [];
+    for (const f of touchedFilesSet) {
+      try {
+        await fs.access(path.join(projectRoot, f));
+        out.push(f);
+      } catch (e) { /* arquivo removido: nao entra na revisao */ }
+    }
+    return out;
+  }
+
   let reply, replyHtml;
   try {
     const r = await ask(chatView, turn0);
@@ -362,7 +373,7 @@ async function runAgent(opts) {
       const workCmds = segments.filter(function (s) {
         return s.type !== 'text' && s.type !== 'done' && s.type !== 'truncated';
       });
-      const hasDone = segments.some(function (s) { return s.type === 'done'; });
+      let hasDone = segments.some(function (s) { return s.type === 'done'; });
 
       // Envia tudo pra tela de uma vez: texto e cards pendentes, na ordem em
       // que aparecem na resposta. Cada comando ganha o id aqui; a execucao
@@ -400,18 +411,22 @@ async function runAgent(opts) {
       }
 
       if (workCmds.length === 0 && !hasDone) {
-        const r = await askAndLog('[Lembrete: emita comandos <<< >>> ou <<<DONE>>>.]', false);
-        reply = r.text;
-        replyHtml = r.html || r.text;
-        turn++;
-        continue;
+        if ((reply || '').trim()) {
+          hasDone = true;
+        } else {
+          const r = await askAndLog('[Lembrete: emita comandos <<< >>> ou <<<DONE>>>.]', false);
+          reply = r.text;
+          replyHtml = r.html || r.text;
+          turn++;
+          continue;
+        }
       }
 
       if (hasDone && workCmds.length === 0) {
         let finalSummary = reply || '';
         finalSummary = finalSummary.replace(/<<<DONE>>>/g, '').trim();
 
-        const touchedFiles = Array.from(touchedFilesSet);
+        const touchedFiles = await existingTouched();
         const needsReview = touchedFiles.length > 0;
         const reviewPrompt = needsReview
           ? ('Revise as alteracoes que voce acabou de fazer nos seguintes arquivos:\n' +
@@ -669,7 +684,7 @@ async function runAgent(opts) {
         finalSummary = finalSummary.replace(/<<<DONE>>>/g, '');
         finalSummary = finalSummary.trim();
 
-        const touchedFiles = Array.from(touchedFilesSet);
+        const touchedFiles = await existingTouched();
         const needsReview = touchedFiles.length > 0;
         const reviewPrompt = needsReview
           ? ('Revise as alteracoes que voce acabou de fazer nos seguintes arquivos:\n' +

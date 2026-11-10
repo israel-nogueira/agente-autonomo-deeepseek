@@ -191,6 +191,34 @@ setTimeout(() => {
 	if (!state.booted) { hideBootCover(); boot(); }
 }, 30000);
 
+async function refreshGitBanner() {
+	const b = $('gitBanner');
+	const msg = $('gitBannerMsg');
+	const btn = $('gitBannerBtn');
+	if (!b || !msg || !btn) return;
+	const project = state.projects.find(p => p.id === state.activeProjectId);
+	if (!project || !project.projectRoot || !project.slug) { b.style.display = 'none'; return; }
+	let st = null;
+	try { st = await window.agentAPI.gitStatus(project.projectRoot, project.slug); } catch (e) { st = null; }
+	if (project.id !== state.activeProjectId) return;
+	if (!st) { b.style.display = 'none'; return; }
+	btn.style.display = 'none';
+	if (st.state === 'nogit') {
+		msg.textContent = '⚠️ Esta pasta não tem Git: nada protege seus arquivos contra alterações do agente.';
+	} else if (st.state === 'nogitbin') {
+		msg.textContent = '⚠️ Git não encontrado no sistema (PATH): sem proteção de branch.';
+	} else if (st.state === 'nobranch') {
+		msg.textContent = '⚠️ A branch "' + st.expected + '" não existe. Você está em "' + (st.current || '?') + '".';
+		btn.style.display = '';
+	} else if (st.state === 'wrongbranch') {
+		msg.textContent = '⚠️ Você está na branch "' + st.current + '" (esperada: "' + st.expected + '").';
+	} else {
+		b.style.display = 'none';
+		return;
+	}
+	b.style.display = 'flex';
+}
+
 function applyState(st) {
 	if (!st) return;
 	state.activeProjectId = st.activeProjectId || null;
@@ -203,6 +231,7 @@ function applyState(st) {
 	renderChats();
 	renderHeader();
 	updateComposerState(state.running);
+	refreshGitBanner();
 }
 
 function renderProjects() {
@@ -1578,6 +1607,21 @@ $('btnOpenDeepSeek').addEventListener('click', async () => {
 });
 $('btnCompactNow').addEventListener('click', doCompact);
 $('compactBannerBtn').addEventListener('click', doCompact);
+$('gitBannerBtn').addEventListener('click', async () => {
+	const project = state.projects.find(p => p.id === state.activeProjectId);
+	if (!project || state.running) return;
+	const btn = $('gitBannerBtn');
+	btn.disabled = true;
+	try {
+		const r = await window.agentAPI.gitCreateBranch(project.projectRoot, project.slug);
+		if (!r || !r.ok) showDiag('Falha ao criar a branch: ' + ((r && r.error) || 'erro desconhecido'), false);
+	} catch (e) {
+		showDiag('Erro ao criar a branch: ' + e.message, false);
+	}
+	btn.disabled = false;
+	await refreshGitBanner();
+});
+window.addEventListener('focus', refreshGitBanner);
 $('sessionFilter').addEventListener('input', renderChats);
 $('btnSend').addEventListener('click', runTask);
 $('btnStop').addEventListener('click', stopTask);

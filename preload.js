@@ -4,6 +4,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('agentAPI', {
   run: (task, projectRoot) => ipcRenderer.invoke('agent:run', { task, projectRoot }),
   abort: () => ipcRenderer.invoke('agent:abort'),
+  gitStatus: (projectRoot, slug) => ipcRenderer.invoke('git:status', { projectRoot, slug }),
+  gitCreateBranch: (projectRoot, slug) => ipcRenderer.invoke('git:createBranch', { projectRoot, slug }),
   compact: () => ipcRenderer.invoke('agent:compact'),
   resetSession: () => ipcRenderer.invoke('agent:resetSession'),
   stats: () => ipcRenderer.invoke('agent:stats'),

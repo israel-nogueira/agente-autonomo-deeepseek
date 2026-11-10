@@ -9,6 +9,7 @@ const { compactSession } = require('./agent/compact');
 const { disableDeepSeekFeatures, resetChat, requestAbort, waitChatReady, resetAbortFlag } = require('./agent/bridge');
 const { killActiveProcesses, resetReadCache } = require('./agent/tools');
 const projects = require('./agent/projects');
+const gitguard = require('./agent/gitguard');
 
 let win = null;
 let splashWindow = null;
@@ -1094,6 +1095,25 @@ ipcMain.handle('agent:disableDeepSeekFeatures', async () => {
 });
 
 // ============================================================
+// GIT (somente local)
+// ============================================================
+ipcMain.handle('git:status', async (event, { projectRoot, slug }) => {
+  const none = { state: 'none', current: '', expected: '' };
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) return none;
+  if (typeof slug !== 'string' || !slug.trim()) return none;
+  try { return await gitguard.gitStatus(projectRoot, slug); }
+  catch (e) { return none; }
+});
+
+ipcMain.handle('git:createBranch', async (event, { projectRoot, slug }) => {
+  if (running) return { ok: false, error: 'existe uma tarefa em andamento. Aguarde ou clique em Parar.' };
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio' };
+  if (typeof slug !== 'string' || !slug.trim()) return { ok: false, error: 'slug vazio' };
+  try { return await gitguard.createBranch(projectRoot, slug); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
+// ============================================================
 // ABORT
 // ============================================================
 ipcMain.handle('agent:abort', async () => {
@@ -1185,6 +1205,29 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
   if (busyNavigation) return { ok: false, error: 'existe uma operacao em andamento. Aguarde.', stats: stats() };
   if (!chatReady()) return { ok: false, error: 'janela do DeepSeek nao existe. Reinicie o app.', stats: stats() };
   if (!activeProjectId) return { ok: false, error: 'nenhum projeto ativo. Crie um projeto primeiro.', stats: stats() };
+
+  // Guarda de branch: se a branch do projeto existe e a atual e outra, pergunta antes de rodar.
+  try {
+    const gp = projects.getProject(activeProjectId);
+    const gs = (gp && gp.slug) ? await gitguard.gitStatus(projectRoot, gp.slug) : null;
+    if (gs && gs.state === 'wrongbranch') {
+      const mbOpts = {
+        type: 'warning',
+        buttons: ['Cancelar', 'Continuar mesmo assim'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Branch diferente',
+        message: 'Voce esta na branch "' + gs.current + '" e nao na "' + gs.expected + '".',
+        detail: 'As alteracoes do agente serao feitas na branch atual.',
+      };
+      const gr = (win && !win.isDestroyed())
+        ? await dialog.showMessageBox(win, mbOpts)
+        : await dialog.showMessageBox(mbOpts);
+      if (gr.response !== 1) {
+        return { ok: false, error: 'Tarefa cancelada: branch atual "' + gs.current + '" (esperada: "' + gs.expected + '").', stats: stats() };
+      }
+    }
+  } catch (e) { sendLog('[main] guarda de branch falhou: ' + e.message); }
 
   // Descarta comandos expirados/sem timestamp antes de rodar.
   try { pruneRunAllowlist(); } catch (e) {}
