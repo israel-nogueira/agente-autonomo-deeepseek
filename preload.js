@@ -41,6 +41,19 @@ contextBridge.exposeInMainWorld('markdownAPI', {
   },
 });
 
+contextBridge.exposeInMainWorld('highlightAPI', {
+  highlight: (code, lang) => {
+    try {
+      const hljs = require('highlight.js');
+      const l = String(lang || '').toLowerCase();
+      if (!l || !hljs.getLanguage(l)) return null;
+      return hljs.highlight(String(code || ''), { language: l, ignoreIllegals: true }).value;
+    } catch (e) {
+      return null;
+    }
+  },
+});
+
 contextBridge.exposeInMainWorld('projectsAPI', {
   state: () => ipcRenderer.invoke('projects:state'),
   list: () => ipcRenderer.invoke('projects:list'),

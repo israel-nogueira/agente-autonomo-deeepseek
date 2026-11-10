@@ -680,6 +680,54 @@ function isAllowedClass(cls) {
   return false;
 }
 
+function enhanceCodeBlocks(root, doc) {
+  const pres = Array.from(root.querySelectorAll('pre'));
+  for (const pre of pres) {
+    if (pre.parentElement && pre.parentElement.classList.contains('code-block')) continue;
+    let lang = '';
+    const prev = pre.previousElementSibling;
+    if (prev) {
+      const m = (prev.textContent || '').trim().match(/^([A-Za-z0-9_+#.-]*)\s*(?:Copy|Copiar)\s*(?:Download|Baixar)?$/i);
+      if (m) { lang = m[1]; prev.remove(); }
+    }
+    if (!lang) {
+      const code = pre.querySelector('code');
+      const cm = code ? (code.className || '').match(/(?:^|\s)language-([A-Za-z0-9_+#.-]+)/) : null;
+      if (cm) lang = cm[1];
+    }
+    const wrap = doc.createElement('div');
+    wrap.className = 'code-block';
+    const head = doc.createElement('div');
+    head.className = 'code-head';
+    const label = doc.createElement('span');
+    label.className = 'code-lang';
+    label.textContent = lang || 'c\u00f3digo';
+    const btn = doc.createElement('button');
+    btn.type = 'button';
+    btn.className = 'code-copy';
+    btn.textContent = 'Copiar';
+    head.appendChild(label);
+    head.appendChild(btn);
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(head);
+    wrap.appendChild(pre);
+    if (lang && window.highlightAPI) {
+      let target = pre.querySelector('code');
+      if (!target) {
+        target = doc.createElement('code');
+        target.textContent = pre.textContent;
+        pre.textContent = '';
+        pre.appendChild(target);
+      }
+      const out = window.highlightAPI.highlight(target.textContent, lang);
+      if (typeof out === 'string' && out.length > 0) {
+        target.innerHTML = out;
+        target.classList.add('hljs');
+      }
+    }
+  }
+}
+
 function sanitizeHtml(html) {
   let raw = String(html || '');
   raw = raw.replace(/<br\s*\/?>/gi, '\n');
@@ -800,6 +848,7 @@ function sanitizeHtml(html) {
   }
 
   for (const child of Array.from(root.childNodes)) walk(child);
+  enhanceCodeBlocks(root, doc);
   return root.innerHTML;
 }
 
@@ -1533,6 +1582,21 @@ $('messageInput').addEventListener('keydown', (e) => {
 document.addEventListener('click', (e) => {
 	const wrap = $('sessionsWrap');
 	if (wrap && wrap.open && !wrap.contains(e.target)) wrap.open = false;
+});
+
+document.addEventListener('click', async (e) => {
+	const btn = e.target && e.target.closest ? e.target.closest('.code-copy') : null;
+	if (!btn) return;
+	const box = btn.closest('.code-block');
+	const pre = box ? box.querySelector('pre') : null;
+	if (!pre) return;
+	try {
+		await navigator.clipboard.writeText(pre.textContent || '');
+		btn.textContent = 'Copiado \u2713';
+	} catch (err) {
+		btn.textContent = 'Falhou';
+	}
+	setTimeout(() => { btn.textContent = 'Copiar'; }, 1500);
 });
 
 window.agentAPI.onCommand((cmd) => {

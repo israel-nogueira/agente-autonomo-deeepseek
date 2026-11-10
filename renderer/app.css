@@ -523,6 +523,77 @@ button{cursor:pointer}
   font-size: 13px;
 }
 
+.markdown-body .code-block {
+  margin: 10px 0;
+  border: 1px solid #2a3748;
+  border-radius: 6px;
+  background: #0e1621;
+  overflow: hidden;
+}
+.markdown-body .code-block .code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #151c27;
+  border-bottom: 1px solid #2a3748;
+}
+.markdown-body .code-block .code-lang {
+  font: 11px/1.4 var(--mono);
+  color: var(--muted);
+  text-transform: lowercase;
+}
+.markdown-body .code-block .code-copy {
+  background: transparent;
+  border: 1px solid #2a3748;
+  border-radius: 4px;
+  color: #c6d6ea;
+  font: 11px/1.4 var(--font);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.markdown-body .code-block .code-copy:hover {
+  background: #1a2433;
+}
+.markdown-body .code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+/* Syntax highlight (highlight.js) */
+.markdown-body .hljs-keyword,
+.markdown-body .hljs-literal,
+.markdown-body .hljs-selector-tag,
+.markdown-body .hljs-doctag { color: #c678dd; }
+.markdown-body .hljs-string,
+.markdown-body .hljs-regexp,
+.markdown-body .hljs-addition { color: #98c379; }
+.markdown-body .hljs-number,
+.markdown-body .hljs-symbol,
+.markdown-body .hljs-attr,
+.markdown-body .hljs-attribute { color: #d19a66; }
+.markdown-body .hljs-comment,
+.markdown-body .hljs-quote { color: #5c6370; font-style: italic; }
+.markdown-body .hljs-title,
+.markdown-body .hljs-section,
+.markdown-body .hljs-selector-id { color: #61afef; }
+.markdown-body .hljs-built_in,
+.markdown-body .hljs-type,
+.markdown-body .hljs-title.class_,
+.markdown-body .hljs-selector-class { color: #e6c07b; }
+.markdown-body .hljs-variable,
+.markdown-body .hljs-template-variable,
+.markdown-body .hljs-name,
+.markdown-body .hljs-tag,
+.markdown-body .hljs-property,
+.markdown-body .hljs-deletion { color: #e06c75; }
+.markdown-body .hljs-meta,
+.markdown-body .hljs-operator { color: #56b6c2; }
+.markdown-body .hljs-punctuation { color: #abb2bf; }
+.markdown-body .hljs-emphasis { font-style: italic; }
+.markdown-body .hljs-strong { font-weight: bold; }
+
 /* Código inline */
 .markdown-body code {
   font-size: 13px;

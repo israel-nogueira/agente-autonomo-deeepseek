@@ -60,6 +60,12 @@ function stripCommands(html) {
   if (typeof html !== 'string') return '';
   let s = html;
 
+  // 0) Normaliza marcadores escritos com entidades (&lt;&lt;&lt;...&gt;&gt;&gt;)
+  //    para o formato literal <<<...>>>, removendo spans. Sem isso, os blocos
+  //    de comando do DeepSeek nao casam com as regex abaixo.
+  s = s.replace(/<\/?span\b[^>]*>/gi, '');
+  s = s.replace(/&lt;&lt;&lt;\s*(WRITE|RUN|EDIT|SAY|OLD_REF|OLD|NEW|READ|LS|TREE|GLOB|GREP|DONE|END)\b([^<]*?)&gt;&gt;&gt;/gi, '<<<$1$2>>>');
+
   // 1) Blocos WRITE/RUN/EDIT/SAY ... <<<END>>>  (incluindo os marcadores)
   //    Nota: o corpo pode ter HTML, entao a gente remove ate o END.
   s = s.replace(/<<<\s*(WRITE|RUN|EDIT|SAY)\b[^>]*>>>[\s\S]*?<<<\s*END\s*>>>/gi, '');
