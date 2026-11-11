@@ -1,16 +1,35 @@
 {
-  "name": "agente-web-deepseek",
+  "name": "opendeepseek",
+  "productName": "OpenDeepSeek",
   "version": "0.1.0",
-  "description": "Agente de código que usa o DeepSeek web via Electron",
+  "description": "Agente de código que usa o DeepSeek web",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
   },
   "devDependencies": {
+    "@electron-forge/cli": "^8.0.1",
+    "@electron-forge/maker-deb": "^8.0.1",
+    "@electron-forge/maker-rpm": "^8.0.1",
+    "@electron-forge/maker-squirrel": "^8.0.1",
+    "@electron-forge/maker-zip": "^8.0.1",
+    "@electron-forge/plugin-auto-unpack-natives": "^8.0.1",
+    "@electron-forge/plugin-fuses": "^8.0.1",
+    "@electron/fuses": "^2.1.3",
     "electron": "^30.0.0"
+  },
+  "build": {
+    "appId": "com.opendeepseek.app",
+    "productName": "OpenDeepSeek",
+    "win": {
+      "icon": "renderer/favicon.ico"
+    }
   },
   "dependencies": {
     "@prettier/plugin-php": "^0.19.6",
+    "electron-squirrel-startup": "^1.0.1",
     "highlight.js": "^11.12.0",
     "marked": "^7.0.5",
     "marked-alert": "^2.1.2",

@@ -1,5 +1,6 @@
 // main.js
 const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
+if (require('electron-squirrel-startup')) app.quit();
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
@@ -84,6 +85,7 @@ function attachStateSaver(winRef) {
 // ============================================================
 function createSplashWindow() {
   splashWindow = new BrowserWindow({
+    icon: path.join(__dirname, 'renderer', 'favicon.ico'),
     width: 520, height: 320,
     frame: false, transparent: true, resizable: false, movable: true,
     minimizable: false, maximizable: false, fullscreenable: false,
@@ -326,8 +328,9 @@ function createAgentWindow() {
     width: agentState.width || 1150,
     height: agentState.height || 780,
     x: agentState.x, y: agentState.y,
-    title: 'Agente DeepSeek',
+    title: 'Open DeepSeek',
     show: false,
+    icon: path.join(__dirname, 'renderer', 'favicon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -339,7 +342,7 @@ function createAgentWindow() {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   attachStateSaver(win);
   // debug: mantido enquanto voce esta desenvolvendo
-  win.webContents.openDevTools({ mode: 'detach' });
+  // win.webContents.openDevTools({ mode: 'detach' });
 
   // ITEM 8: bloquear navegacao e novas janelas da janela principal.
   // - novas janelas: sempre deny; http/https abrem no navegador externo.
@@ -387,8 +390,9 @@ function createChatWindow() {
     width: chatState.width || 900,
     height: chatState.height || 900,
     x: chatState.x, y: chatState.y,
-    title: 'DeepSeek',
+    title: 'Open DeepSeek',
     show: false,
+    icon: path.join(__dirname, 'renderer', 'favicon.ico'),
     webPreferences: {
       partition: 'persist:deepseek',
       userAgent: FAKE_UA,
@@ -433,7 +437,7 @@ function createChatWindow() {
 
   attachStateSaver(chatWindow);
   // debug: mantido enquanto voce esta desenvolvendo
-  chatWindow.webContents.openDevTools({ mode: 'detach' });
+  // chatWindow.webContents.openDevTools({ mode: 'detach' });
 
   chatWindow.on('closed', () => {
     chatWindow = null;
@@ -457,8 +461,9 @@ function openSessionPopup(uuid, label) {
   const url = projects.getChatUrl(uuid);
   chatPopup = new BrowserWindow({
     width: 1000, height: 820,
-    title: 'DeepSeek — ' + (label || uuid) + ' (somente leitura)',
+    title: 'Open DeepSeek — ' + (label || uuid) + ' (somente leitura)',
     parent: win || undefined, modal: false,
+    icon: path.join(__dirname, 'renderer', 'favicon.ico'),
     webPreferences: {
       partition: 'persist:deepseek',
       userAgent: FAKE_UA,
@@ -1512,6 +1517,10 @@ ipcMain.on('app:retryBoot', async () => {
 // ============================================================
 process.on('uncaughtException', (err) => { console.error('ERRO NO MAIN:', err); });
 process.on('unhandledRejection', (err) => { console.error('PROMISE NAO TRATADA:', err); });
+app.setName('OpenDeepSeek');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.opendeepseek.app');
+}
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
