@@ -18,7 +18,7 @@ jobs:
             target: win
           - os: ubuntu-latest
             target: linux
-          - os: macos-latest
+          - os: macos-13
             target: mac
 
     steps:
