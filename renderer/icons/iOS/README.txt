@@ -1,0 +1,1 @@
+Copy AppIcon.appiconset into your Xcode Assets.xcassets catalog. Xcode can derive iPhone and iPad icon sizes from the 1024px universal image. AdditionalSizes contains separate PNGs if you need them for older projects. This export does not create dark or tinted icon appearances.
