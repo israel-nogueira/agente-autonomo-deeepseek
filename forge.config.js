@@ -8,6 +8,7 @@ module.exports = {
     icon: 'renderer/icons/app/favicon',
     // Boa prática: nome final do executável
     name: 'OpenDeepSeek',
+    executableName: 'opendeepseek',
     // Remove arquivos desnecessários do bundle final
     ignore: [
       /^\/\.git/,
