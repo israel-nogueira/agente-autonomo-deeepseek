@@ -1,5 +1,5 @@
 // main.js
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, Tray, nativeImage, screen } = require('electron');
 if (require('electron-squirrel-startup')) app.quit();
 const path = require('path');
 const fs = require('fs');
@@ -12,10 +12,18 @@ const { killActiveProcesses, resetReadCache } = require('./agent/tools');
 const projects = require('./agent/projects');
 const gitguard = require('./agent/gitguard');
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
+
 let win = null;
 let splashWindow = null;
 let chatWindow = null;
 let chatPopup = null;
+let tray = null;
+let toastWindow = null;
+let toastKind = null;
 
 let sessionLog = [];
 let tasksCount = 0;
@@ -48,6 +56,10 @@ const BOOT_TIMEOUT_MS = 20000;
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 const RUN_ALLOWLIST_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const FAKE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
+
+let trayState = 'idle';
+let trayStateIconCache = {};
+const overlayIconCache = {};
 
 // ============================================================
 // Persistencia de posicao/tamanho das janelas
@@ -318,6 +330,221 @@ function createPendingChat() {
 }
 
 // ============================================================
+// Tray / mostrar janela principal
+// ============================================================
+function showMainWindow() {
+  try {
+    if (!win || win.isDestroyed()) return;
+    // Se o boot ainda nao terminou, nao mostrar.
+    if (splashWindow && !splashWindow.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    try { setTrayState(trayState); } catch (e) { /* ignora */ }
+  } catch (e) { /* ignora */ }
+}
+
+function destroyTray() {
+  if (tray) {
+    try { tray.destroy(); } catch (e) { /* ignora */ }
+    tray = null;
+  }
+}
+
+function trayIconForState(state) {
+  if (trayStateIconCache[state]) return trayStateIconCache[state];
+  const fileName = 'tray-' + state + '.png';
+  const iconPath = path.join(__dirname, 'renderer', 'tray', fileName);
+  let img;
+  try {
+    img = nativeImage.createFromPath(iconPath);
+    if (img.isEmpty()) img = nativeImage.createFromPath(path.join(__dirname, 'renderer', 'favicon.ico'));
+  } catch (e) {
+    try { img = nativeImage.createFromPath(path.join(__dirname, 'renderer', 'favicon.ico')); }
+    catch (_) { img = null; }
+  }
+  if (img) trayStateIconCache[state] = img;
+  return img;
+}
+
+function overlayDescriptionForState(state) {
+  if (state === 'running') return 'Executando tarefa';
+  if (state === 'approval') return 'Aguardando aprovação';
+  if (state === 'done') return 'Tarefa concluída';
+  if (state === 'error') return 'A tarefa falhou';
+  return '';
+}
+
+function overlayIconForState(state) {
+  if (overlayIconCache[state] !== undefined) return overlayIconCache[state];
+  const iconPath = path.join(__dirname, 'renderer', 'tray', 'overlay-' + state + '.png');
+  let img = null;
+  try { img = nativeImage.createFromPath(iconPath); }
+  catch (e) { img = null; }
+  if (!img || img.isEmpty()) {
+    overlayIconCache[state] = null;
+    return null;
+  }
+  overlayIconCache[state] = img;
+  return img;
+}
+
+function setTrayState(state) {
+  const next = (state === 'running' || state === 'approval' || state === 'done' || state === 'error')
+    ? state
+    : 'idle';
+  const previousState = trayState;
+  trayState = next;
+
+  try {
+    if (tray) {
+      const img = trayIconForState(next);
+      if (img) { try { tray.setImage(img); } catch (e) { } }
+      const tip = 'OpenDeepSeek — ' + (next === 'idle' ? 'Ocioso' : overlayDescriptionForState(next));
+      try { tray.setToolTip(tip); } catch (e) { }
+    }
+  } catch (e) { /* ignora */ }
+
+  try {
+    if (process.platform === 'win32' && win && !win.isDestroyed()) {
+      if (next === 'idle') {
+        try { console.log('[overlay] estado=idle (removendo)'); } catch (e) { /* ignora */ }
+        try {
+          win.setOverlayIcon(null, '');
+          try { console.log('[overlay] setOverlayIcon chamado OK'); } catch (e) { /* ignora */ }
+        } catch (e) {
+          try { console.log('[overlay] ERRO: ' + (e && e.message ? e.message : String(e))); } catch (_) { /* ignora */ }
+        }
+      } else {
+        const overlay = overlayIconForState(next);
+        const iconPath = path.join(__dirname, 'renderer', 'tray', 'overlay-' + next + '.png');
+        let existe = false;
+        try { existe = fs.existsSync(iconPath); } catch (e) { existe = false; }
+        let vazio = true;
+        let tamanho = '0x0';
+        try {
+          if (overlay) {
+            vazio = overlay.isEmpty ? overlay.isEmpty() : false;
+            const sz = overlay.getSize ? overlay.getSize() : { width: 0, height: 0 };
+            tamanho = (sz && typeof sz.width === 'number' ? sz.width : 0) + 'x' + (sz && typeof sz.height === 'number' ? sz.height : 0);
+          }
+        } catch (e) { /* ignora */ }
+
+        let visivel = false;
+        let minimizada = false;
+        try { visivel = win.isVisible(); } catch (e) { visivel = false; }
+        try { minimizada = win.isMinimized(); } catch (e) { minimizada = false; }
+
+        try {
+          console.log('[overlay] estado=' + next +
+            ' | plataforma=' + process.platform +
+            ' | win=' + ((win && !win.isDestroyed()) ? 'sim' : 'nao') +
+            ' | path=' + iconPath +
+            ' | existe=' + existe +
+            ' | vazio=' + vazio +
+            ' | tamanho=' + tamanho +
+            ' | visivel=' + visivel +
+            ' | minimizada=' + minimizada);
+        } catch (e) { /* ignora */ }
+
+        try {
+          if (overlay) {
+            win.setOverlayIcon(overlay, overlayDescriptionForState(next));
+          } else {
+            win.setOverlayIcon(null, '');
+          }
+          try { console.log('[overlay] setOverlayIcon chamado OK'); } catch (e) { /* ignora */ }
+        } catch (e) {
+          try { console.log('[overlay] ERRO: ' + (e && e.message ? e.message : String(e))); } catch (_) { /* ignora */ }
+        }
+      }
+    }
+  } catch (e) { /* ignora */ }
+
+  try {
+    if (process.platform === 'win32' && win && !win.isDestroyed()) {
+      if (next === 'running') {
+        win.setProgressBar(1, { mode: 'indeterminate' });
+      } else if (next === 'approval') {
+        win.setProgressBar(1, { mode: 'paused' });
+      } else if (next === 'done') {
+        win.setProgressBar(1, { mode: 'normal' });
+      } else if (next === 'error') {
+        win.setProgressBar(1, { mode: 'error' });
+      } else {
+        win.setProgressBar(-1);
+      }
+    }
+  } catch (e) { /* ignora */ }
+
+  try {
+    if (win && !win.isDestroyed()) {
+      const nextIsAlert = (next === 'approval' || next === 'done' || next === 'error');
+      const stateChanged = previousState !== next;
+      let focused = false;
+      try { focused = win.isFocused(); } catch (e) { focused = false; }
+      if (nextIsAlert && !focused && stateChanged) {
+        win.flashFrame(true);
+      } else if (next === 'running' || next === 'idle') {
+        win.flashFrame(false);
+      }
+    }
+  } catch (e) { /* ignora */ }
+}
+
+function createTray() {
+  try {
+    const iconPath = path.join(__dirname, 'renderer', 'favicon.ico');
+    const img = nativeImage.createFromPath(iconPath);
+    tray = new Tray(img.isEmpty() ? iconPath : img);
+    tray.setToolTip('OpenDeepSeek');
+    const ctx = Menu.buildFromTemplate([
+      {
+        label: 'Abrir OpenDeepSeek',
+        click: () => { showMainWindow(); },
+      },
+      {
+        label: 'Sair',
+        click: () => { requestQuit(); },
+      },
+    ]);
+    tray.setContextMenu(ctx);
+    tray.on('click', () => { showMainWindow(); });
+    tray.on('double-click', () => { showMainWindow(); });
+    try { setTrayState(trayState); } catch (e) { /* ignora */ }
+  } catch (e) {
+    console.warn('[main] createTray falhou:', e.message);
+    tray = null;
+  }
+}
+
+function requestQuit() {
+  if (running) {
+    const opts = {
+      type: 'question',
+      buttons: ['Cancelar', 'Sair mesmo'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Sair do OpenDeepSeek',
+      message: 'Existe uma tarefa em andamento.',
+      detail: 'Se você sair agora, a tarefa será interrompida. Deseja sair mesmo assim?',
+    };
+    const runBox = (win && !win.isDestroyed())
+      ? dialog.showMessageBox(win, opts)
+      : dialog.showMessageBox(opts);
+    runBox.then((r) => {
+      if (r.response === 1) {
+        isQuitting = true;
+        app.quit();
+      }
+    }).catch(() => { /* ignora */ });
+    return;
+  }
+  isQuitting = true;
+  app.quit();
+}
+
+// ============================================================
 // Janela do agente
 // ============================================================
 function createAgentWindow() {
@@ -367,6 +594,38 @@ function createAgentWindow() {
     } catch (e) {
       try { event.preventDefault(); } catch (_) { }
     }
+  });
+
+  win.on('close', (event) => {
+    if (isQuitting) return;
+    try {
+      event.preventDefault();
+      try { win.hide(); } catch (e) { }
+      try {
+        if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
+          chatWindow.hide();
+        }
+      } catch (e) { }
+    } catch (e) { /* ignora */ }
+  });
+
+  win.on('show', () => {
+    try { win.flashFrame(false); } catch (e) { /* ignora */ }
+    try {
+      if (trayState === 'done' || trayState === 'error') {
+        setTrayState('idle');
+      } else {
+        setTrayState(trayState);
+      }
+    } catch (e) { /* ignora */ }
+  });
+
+  win.on('focus', () => {
+    try { win.flashFrame(false); } catch (e) { /* ignora */ }
+  });
+
+  win.on('restore', () => {
+    try { win.flashFrame(false); } catch (e) { /* ignora */ }
   });
 
   win.on('closed', () => {
@@ -473,6 +732,181 @@ function openSessionPopup(uuid, label) {
   chatPopup.loadURL(url);
   chatPopup.on('closed', () => { chatPopup = null; });
   return { ok: true };
+}
+
+// ============================================================
+// Popup de conclusao (toast)
+// ============================================================
+function destroyToast() {
+  if (toastWindow && !toastWindow.isDestroyed()) {
+    try { toastWindow.destroy(); } catch (e) { /* ignora */ }
+  }
+  toastWindow = null;
+  toastKind = null;
+}
+
+function showToast(opts) {
+  try {
+    destroyToast();
+
+    const data = opts || {};
+    let kind = String(data.kind || 'done');
+    if (kind !== 'done' && kind !== 'approval' && kind !== 'error') kind = 'done';
+
+    const project = String(data.project || '');
+    const files = String((typeof data.files === 'number') ? data.files : 0);
+    const duration = String(data.duration || '');
+    const message = String(data.message || '');
+    const count = String((typeof data.count === 'number') ? data.count : 0);
+
+    let toastW = 380;
+    let toastH = 120;
+    if (kind === 'error') toastH = 130;
+    else if (kind === 'approval') toastH = 150;
+
+    const margin = 16;
+
+    let x = 0;
+    let y = 0;
+    try {
+      const point = screen.getCursorScreenPoint();
+      const display = screen.getDisplayNearestPoint(point);
+      const wa = display.workArea;
+      x = Math.round(wa.x + wa.width - toastW - margin);
+      y = Math.round(wa.y + wa.height - toastH - margin);
+    } catch (e) { /* usa 0,0 */ }
+
+    toastWindow = new BrowserWindow({
+      width: toastW,
+      height: toastH,
+      x: x,
+      y: y,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      hasShadow: false,
+      show: false,
+      focusable: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'renderer', 'toast-preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+
+    toastKind = kind;
+
+    const indexUrl = pathToFileURL(path.join(__dirname, 'renderer', 'toast.html')).href;
+    toastWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    toastWindow.webContents.on('will-navigate', (event, url) => {
+      try {
+        if (typeof url === 'string' && url.split('#')[0] === indexUrl) return;
+        event.preventDefault();
+      } catch (e) {
+        try { event.preventDefault(); } catch (_) { }
+      }
+    });
+
+    toastWindow.once('ready-to-show', () => {
+      try {
+        if (!toastWindow || toastWindow.isDestroyed()) return;
+        toastWindow.showInactive();
+      } catch (e) { /* ignora */ }
+    });
+
+    toastWindow.on('closed', () => { toastWindow = null; toastKind = null; });
+
+    toastWindow.loadFile(path.join(__dirname, 'renderer', 'toast.html'), {
+      query: {
+        kind: kind,
+        project: project,
+        files: files,
+        duration: duration,
+        message: message,
+        count: count,
+      },
+    });
+  } catch (e) {
+    console.warn('[main] showToast falhou:', e.message);
+    destroyToast();
+  }
+}
+
+function showDoneToast(data) {
+  const d = data || {};
+  showToast({
+    kind: 'done',
+    project: d.project,
+    files: d.files,
+    duration: d.duration,
+  });
+}
+
+function formatDuration(ms) {
+  try {
+    let totalSec = Math.floor((Number(ms) || 0) / 1000);
+    if (totalSec < 0) totalSec = 0;
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) {
+      return h + 'h ' + String(m).padStart(2, '0') + 'm';
+    }
+    if (m > 0) {
+      return m + 'm ' + String(s).padStart(2, '0') + 's';
+    }
+    return s + 's';
+  } catch (e) {
+    return '';
+  }
+}
+
+function appIsInBackground() {
+  try {
+    const focused = BrowserWindow.getFocusedWindow();
+    if (!focused) return true;
+    if (!win || win.isDestroyed()) return true;
+    if (!win.isVisible() || win.isMinimized()) return true;
+    if (focused !== win) return true;
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+function getActiveProjectName() {
+  try {
+    const p = activeProjectId ? projects.getProject(activeProjectId) : null;
+    if (p && typeof p.name === 'string') return p.name;
+  } catch (e) { /* ignora */ }
+  return '';
+}
+
+function notifyTaskDone(result, startedAt) {
+  try {
+    if (result && result.aborted) return;
+    if (!appIsInBackground()) return;
+
+    let filesCount = 0;
+    if (result && Array.isArray(result.touchedFiles)) filesCount = result.touchedFiles.length;
+
+    const duration = formatDuration(Date.now() - (Number(startedAt) || Date.now()));
+
+    showDoneToast({
+      project: getActiveProjectName(),
+      files: filesCount,
+      duration: duration,
+    });
+    try { setTrayState('done'); } catch (e) { /* ignora */ }
+  } catch (e) {
+    console.warn('[main] notifyTaskDone falhou:', e.message);
+  }
 }
 
 // ============================================================
@@ -710,6 +1144,10 @@ function confirmRunBatch(items) {
       ipcMain.removeListener('run:batch-response', handler);
       clearTimeout(timer);
 
+      try {
+        if (toastKind === 'approval') destroyToast();
+      } catch (e) { /* ignora */ }
+
       const raw = data || {};
       const approved = Array.isArray(raw.approved) ? raw.approved : [];
       const rawAlways = Array.isArray(raw.always) ? raw.always : [];
@@ -728,7 +1166,15 @@ function confirmRunBatch(items) {
       done({ approved: [], always: [], timeout: true });
     }, 5 * 60 * 1000);
 
-    try { win.webContents.send('run:batch-request', { items }); }
+    try {
+      win.webContents.send('run:batch-request', { items });
+      try {
+        if (appIsInBackground()) {
+          showToast({ kind: 'approval', project: getActiveProjectName(), count: items.length });
+          setTrayState('approval');
+        }
+      } catch (e) { /* ignora */ }
+    }
     catch (e) { console.warn('[confirmRunBatch] falha ao enviar IPC:', e.message); done({ approved: [], always: [] }); }
   });
 }
@@ -752,6 +1198,26 @@ ipcMain.handle('dialog:pickFolder', async () => {
   });
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
+});
+
+// ============================================================
+// IPC — toast
+// ============================================================
+ipcMain.on('toast:close', (event) => {
+  try {
+    if (!toastWindow || toastWindow.isDestroyed()) return;
+    if (event && event.sender && event.sender !== toastWindow.webContents) return;
+    destroyToast();
+  } catch (e) { /* ignora */ }
+});
+
+ipcMain.on('toast:open', (event) => {
+  try {
+    if (!toastWindow || toastWindow.isDestroyed()) return;
+    if (event && event.sender && event.sender !== toastWindow.webContents) return;
+    showMainWindow();
+    destroyToast();
+  } catch (e) { /* ignora */ }
 });
 
 // ============================================================
@@ -1279,11 +1745,19 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
   currentTurnLog = [];
   const startedAt = Date.now();
 
+  try { setTrayState('running'); } catch (e) { /* ignora */ }
+
   const watchdog = setTimeout(() => {
     if (myRunId !== currentRunId) return;
     if (running) {
       running = false;
       sendLog('⚠️ WATCHDOG: tarefa travada por mais de ' + Math.round(RUN_HARD_TIMEOUT_MS / 60000) + 'min. Estado resetado.');
+      try {
+        if (appIsInBackground()) {
+          showToast({ kind: 'error', project: getActiveProjectName(), message: 'Tarefa travada: estado resetado pelo watchdog.' });
+          setTrayState('error');
+        }
+      } catch (e) { /* ignora */ }
     }
   }, RUN_HARD_TIMEOUT_MS);
 
@@ -1324,6 +1798,10 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
     try { pruneSessionLog(sessionLog); } catch (e) { }
     notifyProjectsChanged();
 
+    try { notifyTaskDone(result, startedAt); } catch (e) { /* silencioso */ }
+
+    try { setTrayState(result && result.aborted ? 'idle' : 'done'); } catch (e) { /* ignora */ }
+
     return {
       ok: true,
       result: {
@@ -1347,6 +1825,18 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
       }
     }
     currentTurnLog = null;
+
+    try {
+      if (!abortRequested && appIsInBackground()) {
+        let errMsg = String((err && err.message) || 'erro desconhecido');
+        if (errMsg.length > 140) errMsg = errMsg.slice(0, 137) + '...';
+        showToast({ kind: 'error', project: getActiveProjectName(), message: errMsg });
+        setTrayState('error');
+      } else if (abortRequested) {
+        setTrayState('idle');
+      }
+    } catch (e) { /* ignora */ }
+
     return { ok: false, error: err.message, stats: statsAfterRun() };
   } finally {
     clearTimeout(watchdog);
@@ -1513,6 +2003,7 @@ function onBootSuccess() {
   closeSplash();
   if (win && !win.isDestroyed()) {
     win.show(); win.focus();
+    try { setTrayState(trayState); } catch (e) { /* ignora */ }
     try { win.webContents.send('app:ready', { ok: true }); } catch (e) { }
   }
 }
@@ -1537,10 +2028,16 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('com.opendeepseek.app');
 }
 
+app.on('second-instance', () => {
+  try { showMainWindow(); } catch (e) { /* ignora */ }
+});
+
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return;
   Menu.setApplicationMenu(null);
   createSplashWindow();
   createAgentWindow();
+  createTray();
   appBoot();
 });
 
@@ -1549,6 +2046,8 @@ app.on('before-quit', () => {
   try { persistActiveChatState(); persistRunAllowlist(); projects.flush(); } catch (e) { }
   SUCCEEDED_THIS_SESSION.clear();
   saveWindowState();
+  destroyToast();
+  destroyTray();
 });
 
 app.on('window-all-closed', () => {
