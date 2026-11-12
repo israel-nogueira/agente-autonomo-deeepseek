@@ -4,8 +4,8 @@ const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 module.exports = {
   packagerConfig: {
     asar: true,
-    // Sem extensão! O Forge procura .ico no Windows automaticamente
-    icon: 'renderer/favicon',
+    // Sem extensão! O Forge resolve .ico/.icns/.png por plataforma automaticamente.
+    icon: 'renderer/icons/app/favicon',
     // Boa prática: nome final do executável
     name: 'OpenDeepSeek',
     // Remove arquivos desnecessários do bundle final
@@ -15,6 +15,7 @@ module.exports = {
       /^\/out/,
       /^\/README\.md$/,
       /^\/forge\.config\.js$/,
+      /^\/\.github/,
     ],
   },
   rebuildConfig: {},
@@ -23,7 +24,7 @@ module.exports = {
       name: '@electron-forge/maker-squirrel',
       config: {
         // Aqui a extensão é OBRIGATÓRIA
-        setupIcon: 'renderer/favicon.ico',
+        setupIcon: 'renderer/icons/app/favicon.ico',
         // Nome que aparece no menu Iniciar / Adicionar-Remover Programas
         name: 'OpenDeepSeek',
         // Autor (aparece no instalador)
@@ -38,11 +39,22 @@ module.exports = {
     },
     {
       name: '@electron-forge/maker-deb',
-      config: {},
+      config: {
+        options: {
+          icon: 'renderer/icons/app/favicon.png',
+          maintainer: 'Israel Nogueira',
+          homepage: 'https://github.com/israel-nogueira/agente-autonomo-deeepseek',
+        },
+      },
     },
     {
       name: '@electron-forge/maker-rpm',
-      config: {},
+      config: {
+        options: {
+          icon: 'renderer/icons/app/favicon.png',
+          homepage: 'https://github.com/israel-nogueira/agente-autonomo-deeepseek',
+        },
+      },
     },
   ],
   plugins: [
