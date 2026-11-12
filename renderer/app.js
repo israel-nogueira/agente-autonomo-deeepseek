@@ -15,6 +15,7 @@ const state = {
 	booted: false,
 	histPage: 0,
 	histTotal: 0,
+	commitsOpen: false,
 };
 
 const TOKENS_WARN = 12000;
@@ -85,7 +86,7 @@ function showDiag(msg, ok, opts) {
 		btn.style.cssText = 'padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.4);background:rgba(255,255,255,.15);color:#fff;font-size:11px;font-weight:700;cursor:pointer;flex-shrink:0';
 		btn.addEventListener('click', () => {
 			b.style.display = 'none';
-			try { opts.onAction(); } catch (e) {}
+			try { opts.onAction(); } catch (e) { }
 		});
 		b.appendChild(btn);
 	}
@@ -169,16 +170,16 @@ async function boot() {
 	try {
 		const st = await window.projectsAPI.state();
 		applyState(st);
-		try { await restoreHistory(); } catch (e) {}
+		try { await restoreHistory(); } catch (e) { }
 	} catch (e) { showDiag('Falha ao carregar projetos: ' + e.message, false); }
 	try {
 		const v = await window.agentAPI.isChatVisible();
 		applyChatWindowState(v);
-	} catch (e) {}
+	} catch (e) { }
 	try {
 		const s = await window.agentAPI.stats();
 		applyStats(s);
-	} catch (e) {}
+	} catch (e) { }
 }
 
 window.appAPI.onReady((data) => {
@@ -219,6 +220,107 @@ async function refreshGitBanner() {
 	b.style.display = 'flex';
 }
 
+let pendingRestore = null;
+
+function fmtCommitDate(ts) {
+	const d = new Date(ts);
+	return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' · ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function setCommitsOpen(open) {
+	state.commitsOpen = !!open;
+	const panel = $('commitsPanel');
+	const appEl = document.querySelector('.app');
+	if (panel) panel.style.display = state.commitsOpen ? 'flex' : 'none';
+	if (appEl) appEl.classList.toggle('commits-open', state.commitsOpen);
+	if (state.commitsOpen) refreshCommitsPanel();
+}
+
+function commitsMsg(list, text) {
+	list.innerHTML = '';
+	const em = document.createElement('div');
+	em.className = 'commits-empty';
+	em.textContent = text;
+	list.appendChild(em);
+}
+
+async function refreshCommitsPanel() {
+	if (!state.commitsOpen) return;
+	const list = $('commitsList');
+	const sub = $('commitsSub');
+	if (!list || !sub) return;
+	const project = state.projects.find(p => p.id === state.activeProjectId);
+	if (!project || !project.projectRoot || !project.slug) {
+		sub.textContent = '—';
+		commitsMsg(list, 'Selecione um projeto com pasta raiz.');
+		return;
+	}
+	let r = null;
+	try { r = await window.agentAPI.gitLog(project.projectRoot, project.slug, 50); }
+	catch (e) { r = { ok: false, error: e.message }; }
+	if (project.id !== state.activeProjectId || !state.commitsOpen) return;
+	if (!r || !r.ok) {
+		sub.textContent = '—';
+		commitsMsg(list, (r && r.error) || 'Não foi possível listar os commits.');
+		return;
+	}
+	sub.textContent = r.branch + ' · ' + r.commits.length + ' commit(s)';
+	if (!r.commits.length) { commitsMsg(list, 'Nenhum commit nesta branch.'); return; }
+	list.innerHTML = '';
+	const mk = function (tag, cls, text) {
+		const el = document.createElement(tag);
+		if (cls) el.className = cls;
+		if (text !== undefined) el.textContent = text;
+		return el;
+	};
+	r.commits.forEach(function (c, idx) {
+		const btn = mk('button', 'commit-item' + (c.isRestore ? ' is-restore' : '') + (idx === 0 ? ' is-head' : ''));
+		btn.type = 'button';
+		const subj = mk('div', 'commit-subject', c.isRestore ? '↩ Restore para ' + c.restoreOf : c.subject);
+		subj.title = c.subject;
+		const meta = mk('div', 'commit-meta');
+		if (idx === 0) meta.appendChild(mk('span', 'commit-badge', 'ATUAL'));
+		meta.appendChild(mk('span', 'commit-hash', c.short));
+		meta.appendChild(mk('span', '', fmtCommitDate(c.ts)));
+		meta.appendChild(mk('span', '', c.files + (c.files === 1 ? ' arquivo' : ' arquivos')));
+		if (c.insertions) meta.appendChild(mk('span', 'commit-add', '+' + c.insertions));
+		if (c.deletions) meta.appendChild(mk('span', 'commit-del', '-' + c.deletions));
+		btn.appendChild(subj);
+		btn.appendChild(meta);
+		btn.addEventListener('click', () => {
+			if (idx === 0) { showDiag('Este já é o commit atual.', true); return; }
+			openRestoreModal(project, c, r.dirty || 0);
+		});
+		list.appendChild(btn);
+	});
+}
+
+function openRestoreModal(project, c, dirty) {
+	if (state.running) { showDiag('Aguarde a tarefa terminar para restaurar.', false); return; }
+	pendingRestore = { project: project, commit: c };
+	$('modalRestoreCaption').textContent = 'Os arquivos do projeto voltarão ao estado deste commit. O histórico é preservado: será criado um novo commit de restore.';
+	const info = $('modalRestoreInfo');
+	info.className = 'restore-info';
+	info.innerHTML = '';
+	const t = document.createElement('div');
+	t.style.fontWeight = '600';
+	t.textContent = c.isRestore ? '↩ Restore para ' + c.restoreOf : c.subject;
+	const m = document.createElement('div');
+	m.style.color = '#96a6bc';
+	m.textContent = c.short + ' · ' + fmtCommitDate(c.ts) + ' · ' + c.files + (c.files === 1 ? ' arquivo' : ' arquivos');
+	info.appendChild(t);
+	info.appendChild(m);
+	const warn = $('modalRestoreWarn');
+	warn.className = 'restore-warn';
+	if (dirty > 0) {
+		warn.textContent = 'Atenção: ' + dirty + ' arquivo(s) com alterações não commitadas serão sobrescritos e perdidos.';
+		warn.style.display = 'block';
+	} else {
+		warn.style.display = 'none';
+	}
+	$('modalRestore').style.display = 'flex';
+}
+
 function applyState(st) {
 	if (!st) return;
 	state.activeProjectId = st.activeProjectId || null;
@@ -232,6 +334,7 @@ function applyState(st) {
 	renderHeader();
 	updateComposerState(state.running);
 	refreshGitBanner();
+	refreshCommitsPanel();
 }
 
 function renderProjects() {
@@ -248,11 +351,11 @@ function renderProjects() {
 		btn.innerHTML =
 			'<svg class="i"><use href="#i-folder"/></svg>' +
 			'<span class="project-copy">' +
-				'<span class="project-name">' + escapeHtml(p.name) + '</span>' +
-				'<span class="project-path">' + escapeHtml(p.projectRoot || '(sem pasta)') + '</span>' +
+			'<span class="project-name">' + escapeHtml(p.name) + '</span>' +
+			'<span class="project-path">' + escapeHtml(p.projectRoot || '(sem pasta)') + '</span>' +
 			'</span>' +
 			'<span class="project-menu">' +
-				'<button type="button" title="Opções" data-menu="1"><svg class="i"><use href="#i-dots"/></svg></button>' +
+			'<button type="button" title="Opções" data-menu="1"><svg class="i"><use href="#i-dots"/></svg></button>' +
 			'</span>';
 		btn.addEventListener('click', async (ev) => {
 			const menuBtn = ev.target.closest('[data-menu]');
@@ -287,18 +390,18 @@ function renderChats() {
 		item.innerHTML =
 			'<svg class="i"><use href="#i-chats"/></svg>' +
 			'<span class="session-copy">' +
-				'<span class="session-title">' +
-					escapeHtml(c.label || c.uuid) +
-					(isActive ? ' <span class="session-pending-badge" style="background:#1b2b45;color:#82acff;border-color:#30476c;">ativa</span>' : '') +
-					(isPending && !isActive ? ' <span class="session-pending-badge">pendente</span>' : '') +
-				'</span>' +
-				'<span class="session-date">' + fmtDate(c.lastUsedAt) + ' · ' + fmtNum(c.sessionChars) + ' chars</span>' +
-				'<span class="session-uuid">' + escapeHtml(c.uuid) + '</span>' +
+			'<span class="session-title">' +
+			escapeHtml(c.label || c.uuid) +
+			(isActive ? ' <span class="session-pending-badge" style="background:#1b2b45;color:#82acff;border-color:#30476c;">ativa</span>' : '') +
+			(isPending && !isActive ? ' <span class="session-pending-badge">pendente</span>' : '') +
+			'</span>' +
+			'<span class="session-date">' + fmtDate(c.lastUsedAt) + ' · ' + fmtNum(c.sessionChars) + ' chars</span>' +
+			'<span class="session-uuid">' + escapeHtml(c.uuid) + '</span>' +
 			'</span>' +
 			'<span class="session-actions">' +
-				'<button type="button" title="Abrir em popup (somente leitura)" data-act="popup"><svg class="i"><use href="#i-external"/></svg></button>' +
-				'<button type="button" title="Renomear" data-act="rename"><svg class="i"><use href="#i-edit"/></svg></button>' +
-				'<button type="button" title="Excluir" data-act="delete"><svg class="i"><use href="#i-trash"/></svg></button>' +
+			'<button type="button" title="Abrir em popup (somente leitura)" data-act="popup"><svg class="i"><use href="#i-external"/></svg></button>' +
+			'<button type="button" title="Renomear" data-act="rename"><svg class="i"><use href="#i-edit"/></svg></button>' +
+			'<button type="button" title="Excluir" data-act="delete"><svg class="i"><use href="#i-trash"/></svg></button>' +
 			'</span>';
 
 		item.addEventListener('click', async (ev) => {
@@ -417,7 +520,7 @@ async function activateProject(projectId) {
 		hideOverlay();
 		clearTimeline();
 		applyState(res.state);
-		try { await restoreHistory(); } catch (e) {}
+		try { await restoreHistory(); } catch (e) { }
 		if (res.stats) applyStats(res.stats);
 	} catch (e) { overlayError(e.message, () => activateProject(projectId)); }
 }
@@ -433,7 +536,7 @@ async function activateChat(chat) {
 		hideOverlay();
 		clearTimeline();
 		applyState(res.state);
-		try { await restoreHistory(); } catch (e) {}
+		try { await restoreHistory(); } catch (e) { }
 		if (res.stats) applyStats(res.stats);
 	} catch (e) { overlayError(e.message, () => activateChat(chat)); }
 }
@@ -627,14 +730,14 @@ function appendAssistantMessage(text, time, opts) {
 			: '';
 		extraHtml =
 			'<div class="review-btn-wrap">' +
-				'<button class="review-btn" type="button" data-review="1">🤖 Pedir revisão ao agente</button>' +
-				filesHtml +
+			'<button class="review-btn" type="button" data-review="1">🤖 Pedir revisão ao agente</button>' +
+			filesHtml +
 			'</div>';
 	}
 
 	row.innerHTML = avatarHtml +
 		'<div class="assistant-body">' +
-			whoHtml + textHtml + extraHtml +
+		whoHtml + textHtml + extraHtml +
 		'</div>';
 
 	appendNode(row);
@@ -668,8 +771,8 @@ function appendAssistantSegment(html) {
 	block.innerHTML =
 		'<div class="avatar"><svg class="i"><use href="#i-spark"/></svg></div>' +
 		'<div class="assistant-body">' +
-			'<div class="who">DeepSeek Agent <span class="time">' + escapeHtml(timeNow()) + '</span></div>' +
-			'<div class="assistant-text markdown-body"></div>' +
+		'<div class="who">DeepSeek Agent <span class="time">' + escapeHtml(timeNow()) + '</span></div>' +
+		'<div class="assistant-text markdown-body"></div>' +
 		'</div>';
 	appendNode(block);
 
@@ -689,205 +792,205 @@ function resetActiveAssistantBlock() {
 // Sanitizacao de HTML (allowlist)
 // ============================================================
 const ALLOWED_TAGS = new Set([
-  'p', 'div', 'span', 'br', 'hr',
-  'ul', 'ol', 'li',
-  'pre', 'code',
-  'strong', 'b', 'em', 'i', 'u', 's', 'del',
-  'a', 'blockquote',
-  'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  'table', 'thead', 'tbody', 'tr', 'th', 'td',
-  'input',
-  'img',
+	'p', 'div', 'span', 'br', 'hr',
+	'ul', 'ol', 'li',
+	'pre', 'code',
+	'strong', 'b', 'em', 'i', 'u', 's', 'del',
+	'a', 'blockquote',
+	'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+	'table', 'thead', 'tbody', 'tr', 'th', 'td',
+	'input',
+	'img',
 ]);
 
 const ALLOWED_CLASSES = new Set([
-  'code-block',
-  // marked-alert (caso o marked rode e gere os alertas)
-  'markdown-alert',
-  'markdown-alert-note',
-  'markdown-alert-tip',
-  'markdown-alert-important',
-  'markdown-alert-warning',
-  'markdown-alert-caution',
-  'markdown-alert-title',
+	'code-block',
+	// marked-alert (caso o marked rode e gere os alertas)
+	'markdown-alert',
+	'markdown-alert-note',
+	'markdown-alert-tip',
+	'markdown-alert-important',
+	'markdown-alert-warning',
+	'markdown-alert-caution',
+	'markdown-alert-title',
 ]);
 
 function isAllowedClass(cls) {
-  if (ALLOWED_CLASSES.has(cls)) return true;
-  if (cls.indexOf('language-') === 0) return true;
-  return false;
+	if (ALLOWED_CLASSES.has(cls)) return true;
+	if (cls.indexOf('language-') === 0) return true;
+	return false;
 }
 
 function enhanceCodeBlocks(root, doc) {
-  const pres = Array.from(root.querySelectorAll('pre'));
-  for (const pre of pres) {
-    if (pre.parentElement && pre.parentElement.classList.contains('code-block')) continue;
-    let lang = '';
-    const prev = pre.previousElementSibling;
-    if (prev) {
-      const m = (prev.textContent || '').trim().match(/^([A-Za-z0-9_+#.-]*)\s*(?:Copy|Copiar)\s*(?:Download|Baixar)?$/i);
-      if (m) { lang = m[1]; prev.remove(); }
-    }
-    if (!lang) {
-      const code = pre.querySelector('code');
-      const cm = code ? (code.className || '').match(/(?:^|\s)language-([A-Za-z0-9_+#.-]+)/) : null;
-      if (cm) lang = cm[1];
-    }
-    const wrap = doc.createElement('div');
-    wrap.className = 'code-block';
-    const head = doc.createElement('div');
-    head.className = 'code-head';
-    const label = doc.createElement('span');
-    label.className = 'code-lang';
-    label.textContent = lang || 'c\u00f3digo';
-    const btn = doc.createElement('button');
-    btn.type = 'button';
-    btn.className = 'code-copy';
-    btn.textContent = 'Copiar';
-    head.appendChild(label);
-    head.appendChild(btn);
-    pre.parentNode.insertBefore(wrap, pre);
-    wrap.appendChild(head);
-    wrap.appendChild(pre);
-    if (lang && window.highlightAPI) {
-      let target = pre.querySelector('code');
-      if (!target) {
-        target = doc.createElement('code');
-        target.textContent = pre.textContent;
-        pre.textContent = '';
-        pre.appendChild(target);
-      }
-      const out = window.highlightAPI.highlight(target.textContent, lang);
-      if (typeof out === 'string' && out.length > 0) {
-        target.innerHTML = out;
-        target.classList.add('hljs');
-      }
-    }
-  }
+	const pres = Array.from(root.querySelectorAll('pre'));
+	for (const pre of pres) {
+		if (pre.parentElement && pre.parentElement.classList.contains('code-block')) continue;
+		let lang = '';
+		const prev = pre.previousElementSibling;
+		if (prev) {
+			const m = (prev.textContent || '').trim().match(/^([A-Za-z0-9_+#.-]*)\s*(?:Copy|Copiar)\s*(?:Download|Baixar)?$/i);
+			if (m) { lang = m[1]; prev.remove(); }
+		}
+		if (!lang) {
+			const code = pre.querySelector('code');
+			const cm = code ? (code.className || '').match(/(?:^|\s)language-([A-Za-z0-9_+#.-]+)/) : null;
+			if (cm) lang = cm[1];
+		}
+		const wrap = doc.createElement('div');
+		wrap.className = 'code-block';
+		const head = doc.createElement('div');
+		head.className = 'code-head';
+		const label = doc.createElement('span');
+		label.className = 'code-lang';
+		label.textContent = lang || 'c\u00f3digo';
+		const btn = doc.createElement('button');
+		btn.type = 'button';
+		btn.className = 'code-copy';
+		btn.textContent = 'Copiar';
+		head.appendChild(label);
+		head.appendChild(btn);
+		pre.parentNode.insertBefore(wrap, pre);
+		wrap.appendChild(head);
+		wrap.appendChild(pre);
+		if (lang && window.highlightAPI) {
+			let target = pre.querySelector('code');
+			if (!target) {
+				target = doc.createElement('code');
+				target.textContent = pre.textContent;
+				pre.textContent = '';
+				pre.appendChild(target);
+			}
+			const out = window.highlightAPI.highlight(target.textContent, lang);
+			if (typeof out === 'string' && out.length > 0) {
+				target.innerHTML = out;
+				target.classList.add('hljs');
+			}
+		}
+	}
 }
 
 function sanitizeHtml(html) {
-  let raw = String(html || '');
-  raw = raw.replace(/<br\s*\/?>/gi, '\n');
-  raw = raw.replace(/~~([\s\S]*?)~~/g, '<del>$1</del>');
+	let raw = String(html || '');
+	raw = raw.replace(/<br\s*\/?>/gi, '\n');
+	raw = raw.replace(/~~([\s\S]*?)~~/g, '<del>$1</del>');
 
-  // Remove TODOS os <span>...</span> do DeepSeek antes de parsear.
-  // O DeepSeek quebra comandos em vários spans, então o regex de
-  // comando não casa no text node individual. Sem span, o texto
-  // fica contínuo e o regex pega.
-  // (Repetimos até não sobrar span aninhado.)
-  for (let i = 0; i < 5; i++) {
-    const antes = raw;
-    raw = raw.replace(/<span\b[^>]*>/gi, '').replace(/<\/span>/gi, '');
-    if (raw === antes) break;
-  }
+	// Remove TODOS os <span>...</span> do DeepSeek antes de parsear.
+	// O DeepSeek quebra comandos em vários spans, então o regex de
+	// comando não casa no text node individual. Sem span, o texto
+	// fica contínuo e o regex pega.
+	// (Repetimos até não sobrar span aninhado.)
+	for (let i = 0; i < 5; i++) {
+		const antes = raw;
+		raw = raw.replace(/<span\b[^>]*>/gi, '').replace(/<\/span>/gi, '');
+		if (raw === antes) break;
+	}
 
-  const looksLikeHtml = /^\s*<(?:div|p|h[1-6]|ul|ol|table|pre|blockquote|section|article|header|footer)\b/i.test(raw);
-  if (!looksLikeHtml && window.markdownAPI) {
-    try {
-      const md = window.markdownAPI.parse(raw);
-      if (typeof md === 'string' && md.length > 0) raw = md;
-    } catch (e) {}
-  }
+	const looksLikeHtml = /^\s*<(?:div|p|h[1-6]|ul|ol|table|pre|blockquote|section|article|header|footer)\b/i.test(raw);
+	if (!looksLikeHtml && window.markdownAPI) {
+		try {
+			const md = window.markdownAPI.parse(raw);
+			if (typeof md === 'string' && md.length > 0) raw = md;
+		} catch (e) { }
+	}
 
-  const doc = new DOMParser().parseFromString('<div>' + raw + '</div>', 'text/html');
-  const root = doc.body.firstChild;
+	const doc = new DOMParser().parseFromString('<div>' + raw + '</div>', 'text/html');
+	const root = doc.body.firstChild;
 
-  // Remove comandos <<<...>>> de qualquer texto (agora contínuo).
-  const ALL_CMD_RE = /<<<[\s\S]*?>>>/g;
+	// Remove comandos <<<...>>> de qualquer texto (agora contínuo).
+	const ALL_CMD_RE = /<<<[\s\S]*?>>>/g;
 
-  // 1) Remove elementos cujo texto (sem comando e sem espaços) é vazio.
-  const elems = root.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6, pre, code');
-  for (const el of Array.from(elems)) {
-    const t = (el.textContent || '').trim();
-    if (!t) continue;
-    if (t.indexOf('<<<') === -1) continue;
-    const semComando = t.replace(ALL_CMD_RE, '').replace(/\s+/g, '');
-    if (semComando.length === 0) {
-      el.remove();
-    }
-  }
+	// 1) Remove elementos cujo texto (sem comando e sem espaços) é vazio.
+	const elems = root.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6, pre, code');
+	for (const el of Array.from(elems)) {
+		const t = (el.textContent || '').trim();
+		if (!t) continue;
+		if (t.indexOf('<<<') === -1) continue;
+		const semComando = t.replace(ALL_CMD_RE, '').replace(/\s+/g, '');
+		if (semComando.length === 0) {
+			el.remove();
+		}
+	}
 
-  // 2) Nos text nodes restantes, remove comandos inline.
-  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-  const textNodes = [];
-  while (walker.nextNode()) textNodes.push(walker.currentNode);
-  for (const tn of textNodes) {
-    const before = tn.nodeValue;
-    if (!before || before.indexOf('<<<') === -1) continue;
-    const after = before.replace(ALL_CMD_RE, '').replace(/[ \t]+\n/g, '\n');
-    if (after !== before) tn.nodeValue = after;
-  }
+	// 2) Nos text nodes restantes, remove comandos inline.
+	const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+	const textNodes = [];
+	while (walker.nextNode()) textNodes.push(walker.currentNode);
+	for (const tn of textNodes) {
+		const before = tn.nodeValue;
+		if (!before || before.indexOf('<<<') === -1) continue;
+		const after = before.replace(ALL_CMD_RE, '').replace(/[ \t]+\n/g, '\n');
+		if (after !== before) tn.nodeValue = after;
+	}
 
-  // 3) Processa alertas via DOM.
-  const bqs = root.querySelectorAll('blockquote');
-  for (const bq of bqs) {
-    const text = (bq.textContent || '').trim();
-    const m = text.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i);
-    if (!m) continue;
-    const type = m[1].toUpperCase();
-    const cls = 'markdown-alert markdown-alert-' + type.toLowerCase();
-    const title = type.charAt(0) + type.slice(1).toLowerCase();
-    const rest = text.slice(m[0].length).trim();
-    const div = doc.createElement('div');
-    div.className = cls;
-    const pt = doc.createElement('p');
-    pt.className = 'markdown-alert-title';
-    pt.textContent = title;
-    const pb = doc.createElement('p');
-    pb.textContent = rest;
-    div.appendChild(pt);
-    div.appendChild(pb);
-    bq.replaceWith(div);
-  }
+	// 3) Processa alertas via DOM.
+	const bqs = root.querySelectorAll('blockquote');
+	for (const bq of bqs) {
+		const text = (bq.textContent || '').trim();
+		const m = text.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i);
+		if (!m) continue;
+		const type = m[1].toUpperCase();
+		const cls = 'markdown-alert markdown-alert-' + type.toLowerCase();
+		const title = type.charAt(0) + type.slice(1).toLowerCase();
+		const rest = text.slice(m[0].length).trim();
+		const div = doc.createElement('div');
+		div.className = cls;
+		const pt = doc.createElement('p');
+		pt.className = 'markdown-alert-title';
+		pt.textContent = title;
+		const pb = doc.createElement('p');
+		pb.textContent = rest;
+		div.appendChild(pt);
+		div.appendChild(pb);
+		bq.replaceWith(div);
+	}
 
-  function walk(node) {
-    if (!node) return;
-    if (node.nodeType === 3) return;
-    if (node.nodeType !== 1) { node.remove(); return; }
+	function walk(node) {
+		if (!node) return;
+		if (node.nodeType === 3) return;
+		if (node.nodeType !== 1) { node.remove(); return; }
 
-    const tag = node.tagName.toLowerCase();
-    if (!ALLOWED_TAGS.has(tag)) { node.remove(); return; }
+		const tag = node.tagName.toLowerCase();
+		if (!ALLOWED_TAGS.has(tag)) { node.remove(); return; }
 
-    for (const attr of Array.from(node.attributes)) {
-      const name = attr.name.toLowerCase();
-      if (name.startsWith('on')) { node.removeAttribute(attr.name); continue; }
-      if (name === 'href') {
-        // ITEM 9: href so pode ser http:, https: ou mailto:.
-        // Le o valor DECODIFICADO via getAttribute (nao o texto cru),
-        // remove chars de controle/espace e testa. Se nao casar, remove.
-        const decoded = node.getAttribute('href') || '';
-        const clean = decoded.replace(/[\u0000-\u0020\u007f-\u009f]/g, '');
-        if (!/^(https?:|mailto:)/i.test(clean)) {
-          node.removeAttribute('href');
-        }
-        continue;
-      }
-      if (name === 'target' || name === 'rel') continue;
-      if (name === 'class') {
-        const classes = attr.value.split(/\s+/).filter(function (c) { return isAllowedClass(c); });
-        if (classes.length === 0) node.removeAttribute('class');
-        else node.className = classes.join(' ');
-        continue;
-      }
-      if (tag === 'input') {
-        if (name === 'type' || name === 'checked' || name === 'disabled') continue;
-        node.removeAttribute(attr.name);
-        continue;
-      }
-      node.removeAttribute(attr.name);
-    }
+		for (const attr of Array.from(node.attributes)) {
+			const name = attr.name.toLowerCase();
+			if (name.startsWith('on')) { node.removeAttribute(attr.name); continue; }
+			if (name === 'href') {
+				// ITEM 9: href so pode ser http:, https: ou mailto:.
+				// Le o valor DECODIFICADO via getAttribute (nao o texto cru),
+				// remove chars de controle/espace e testa. Se nao casar, remove.
+				const decoded = node.getAttribute('href') || '';
+				const clean = decoded.replace(/[\u0000-\u0020\u007f-\u009f]/g, '');
+				if (!/^(https?:|mailto:)/i.test(clean)) {
+					node.removeAttribute('href');
+				}
+				continue;
+			}
+			if (name === 'target' || name === 'rel') continue;
+			if (name === 'class') {
+				const classes = attr.value.split(/\s+/).filter(function (c) { return isAllowedClass(c); });
+				if (classes.length === 0) node.removeAttribute('class');
+				else node.className = classes.join(' ');
+				continue;
+			}
+			if (tag === 'input') {
+				if (name === 'type' || name === 'checked' || name === 'disabled') continue;
+				node.removeAttribute(attr.name);
+				continue;
+			}
+			node.removeAttribute(attr.name);
+		}
 
-    if (tag === 'a' && node.getAttribute('target') === '_blank') {
-      node.setAttribute('rel', 'noopener noreferrer');
-    }
+		if (tag === 'a' && node.getAttribute('target') === '_blank') {
+			node.setAttribute('rel', 'noopener noreferrer');
+		}
 
-    for (const child of Array.from(node.childNodes)) walk(child);
-  }
+		for (const child of Array.from(node.childNodes)) walk(child);
+	}
 
-  for (const child of Array.from(root.childNodes)) walk(child);
-  enhanceCodeBlocks(root, doc);
-  return root.innerHTML;
+	for (const child of Array.from(root.childNodes)) walk(child);
+	enhanceCodeBlocks(root, doc);
+	return root.innerHTML;
 }
 
 function appendSessionMarker(text) {
@@ -905,8 +1008,8 @@ function appendCompacting() {
 	d.innerHTML =
 		'<span class="pulse"></span>' +
 		'<div>' +
-			'<div class="compacting-title">Compactando sessão...</div>' +
-			'<div class="compacting-desc">O contexto está sendo resumido em uma nova sessão.</div>' +
+		'<div class="compacting-title">Compactando sessão...</div>' +
+		'<div class="compacting-desc">O contexto está sendo resumido em uma nova sessão.</div>' +
 		'</div>';
 	appendNode(d);
 	return d;
@@ -950,8 +1053,8 @@ function makeEventCard(cmdId, type) {
 	summary.innerHTML =
 		'<span class="event-icon"><svg class="i"><use href="#' + eventIconForType(type) + '"/></svg></span>' +
 		'<span class="event-copy">' +
-			'<span class="event-title"></span>' +
-			'<span class="event-desc">aguardando resultado...</span>' +
+		'<span class="event-title"></span>' +
+		'<span class="event-desc">aguardando resultado...</span>' +
 		'</span>' +
 		'<span class="event-trailing"><svg class="i"><use href="#i-chevron"/></svg></span>';
 	const detail = document.createElement('div');
@@ -1182,7 +1285,7 @@ function updateStreamBox(text) {
 	const clean = text.replace(/<<<[\s\S]*?>>>/g, '').replace(/<<<[\s\S]*$/, '').replace(/<{1,2}$/, '').trim();
 	if (!clean) { if (box) box.remove(); return; }
 	let html = null;
-	if (window.markdownAPI) { try { html = window.markdownAPI.parse(clean); } catch (e) {} }
+	if (window.markdownAPI) { try { html = window.markdownAPI.parse(clean); } catch (e) { } }
 	if (typeof html !== 'string') html = '<p>' + escapeHtml(clean) + '</p>';
 	const doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
 	const root = doc.body.firstChild;
@@ -1296,7 +1399,7 @@ async function executeRun(task, opts) {
 		state.running = false;
 		applyRunningState(false);
 		clearPendingTimers();
-		try { await persistTimeline(); } catch (e) {}
+		try { await persistTimeline(); } catch (e) { }
 	}
 }
 async function runTask() {
@@ -1340,6 +1443,7 @@ async function appendCommitButtons(projectRoot, project, files, taskText) {
 			if (r && r.ok) {
 				commitBtn.textContent = '✅ Commit feito' + (r.hash ? ' (' + r.hash + ')' : '');
 				skipBtn.remove();
+				refreshCommitsPanel();
 				return;
 			}
 			showDiag('Falha no commit: ' + ((r && r.error) || 'erro desconhecido'), false);
@@ -1385,7 +1489,7 @@ async function doCompact() {
 			showDiag('Nova sessão criada com o resumo da anterior.', true);
 		}
 		if (res.stats) applyStats(res.stats);
-		try { const st = await window.projectsAPI.state(); applyState(st); await persistTimeline(); } catch (e) {}
+		try { const st = await window.projectsAPI.state(); applyState(st); await persistTimeline(); } catch (e) { }
 	} catch (e) {
 		removeCompacting();
 		appendAssistantMessage('❌ ERRO: ' + e.message, timeNow());
@@ -1503,8 +1607,8 @@ $('runModalRun').addEventListener('click', () => {
 	hideRunBatchModal();
 });
 
-$('modalProjectCancel').addEventListener('click', () => { 
-	$('modalProject').style.display = 'none'; 
+$('modalProjectCancel').addEventListener('click', () => {
+	$('modalProject').style.display = 'none';
 });
 
 $('modalProjectSave').addEventListener('click', async () => {
@@ -1533,7 +1637,7 @@ $('modalProjectSave').addEventListener('click', async () => {
 		if (!res.ok) { alert('Erro: ' + res.error); return; }
 		clearTimeline();
 		applyState(res.state);
-		try { await restoreHistory(); } catch (e) {}
+		try { await restoreHistory(); } catch (e) { }
 		if (res.stats) applyStats(res.stats);
 	} finally {
 		creatingProject = false;
@@ -1544,7 +1648,7 @@ $('btnPickRoot').addEventListener('click', async () => {
 	try {
 		const folder = await window.agentAPI.pickFolder();
 		if (folder) $('projectRootInput').value = folder;
-	} catch (e) {}
+	} catch (e) { }
 });
 
 $('modalRenameCancel').addEventListener('click', () => { $('modalRename').style.display = 'none'; });
@@ -1598,7 +1702,7 @@ $('modalDeleteConfirm').addEventListener('click', async () => {
 						hideOverlay();
 						showDiag('Sua sessão do DeepSeek expirou. Faça login de novo e tente apagar.', false, {
 							actionLabel: 'Abrir DeepSeek',
-							onAction: async () => { try { await window.agentAPI.toggleChat(); } catch (e) {} },
+							onAction: async () => { try { await window.agentAPI.toggleChat(); } catch (e) { } },
 							duration: 12000,
 						});
 					} else {
@@ -1608,7 +1712,7 @@ $('modalDeleteConfirm').addEventListener('click', async () => {
 									if (!r.ok) overlayError(r.error || 'Falha.', null);
 									else { hideOverlay(); clearTimeline(); applyState(r.state); if (r.stats) applyStats(r.stats); }
 								});
-							} catch (e) {}
+							} catch (e) { }
 						});
 					}
 				} else { alert('Erro: ' + res.error); }
@@ -1619,7 +1723,7 @@ $('modalDeleteConfirm').addEventListener('click', async () => {
 			}
 			clearTimeline();
 			applyState(res.state);
-			try { await restoreHistory(); } catch (e) {}
+			try { await restoreHistory(); } catch (e) { }
 			if (res.stats) applyStats(res.stats);
 		} catch (e) { if (remote) hideOverlay(); alert('Erro: ' + e.message); }
 		$('modalDelete').style.display = 'none';
@@ -1641,7 +1745,7 @@ $('modalDeleteConfirm').addEventListener('click', async () => {
 					hideOverlay();
 					showDiag('Sua sessão do DeepSeek expirou. Faça login de novo e tente apagar.', false, {
 						actionLabel: 'Abrir DeepSeek',
-						onAction: async () => { try { await window.agentAPI.toggleChat(); } catch (e) {} },
+						onAction: async () => { try { await window.agentAPI.toggleChat(); } catch (e) { } },
 						duration: 12000,
 					});
 				} else {
@@ -1651,7 +1755,7 @@ $('modalDeleteConfirm').addEventListener('click', async () => {
 								if (!r.ok) overlayError(r.error || 'Falha.', null);
 								else { hideOverlay(); if (wasActive) clearTimeline(); applyState(r.state); if (r.stats) applyStats(r.stats); }
 							});
-						} catch (e) {}
+						} catch (e) { }
 					});
 				}
 			} else { alert('Erro: ' + res.error); }
@@ -1663,13 +1767,13 @@ $('modalDeleteConfirm').addEventListener('click', async () => {
 		if (res.needsLogin) {
 			showDiag('Sua sessão do DeepSeek expirou. Faça login de novo e tente apagar.', false, {
 				actionLabel: 'Abrir DeepSeek',
-				onAction: async () => { try { await window.agentAPI.toggleChat(); } catch (e) {} },
+				onAction: async () => { try { await window.agentAPI.toggleChat(); } catch (e) { } },
 				duration: 12000,
 			});
 		}
 		if (wasActive) clearTimeline();
 		applyState(res.state);
-		if (wasActive) { try { await restoreHistory(); } catch (e) {} }
+		if (wasActive) { try { await restoreHistory(); } catch (e) { } }
 		if (res.stats) applyStats(res.stats);
 	} catch (e) { if (remote) hideOverlay(); alert('Erro: ' + e.message); }
 	$('modalDelete').style.display = 'none';
@@ -1701,6 +1805,33 @@ $('gitBannerBtn').addEventListener('click', async () => {
 	await refreshGitBanner();
 });
 window.addEventListener('focus', refreshGitBanner);
+window.addEventListener('focus', refreshCommitsPanel);
+$('btnCommits').addEventListener('click', () => setCommitsOpen(!state.commitsOpen));
+$('btnCommitsClose').addEventListener('click', () => setCommitsOpen(false));
+$('btnCommitsRefresh').addEventListener('click', refreshCommitsPanel);
+$('modalRestoreCancel').addEventListener('click', () => {
+	$('modalRestore').style.display = 'none';
+	pendingRestore = null;
+});
+$('modalRestoreConfirm').addEventListener('click', async () => {
+	if (!pendingRestore || state.running) return;
+	const pr = pendingRestore;
+	const btn = $('modalRestoreConfirm');
+	btn.disabled = true;
+	btn.textContent = '⏳ Restaurando…';
+	try {
+		const r = await window.agentAPI.gitRestore(pr.project.projectRoot, pr.project.slug, pr.commit.hash);
+		if (r && r.ok) showDiag('Restaurado para ' + pr.commit.short + (r.hash ? ' (novo commit ' + r.hash + ')' : ''), true);
+		else showDiag('Falha ao restaurar: ' + ((r && r.error) || 'erro desconhecido'), false);
+	} catch (e) {
+		showDiag('Erro ao restaurar: ' + e.message, false);
+	}
+	btn.disabled = false;
+	btn.textContent = '↩ Restaurar';
+	$('modalRestore').style.display = 'none';
+	pendingRestore = null;
+	await refreshCommitsPanel();
+});
 $('sessionFilter').addEventListener('input', renderChats);
 $('btnSend').addEventListener('click', runTask);
 $('btnStop').addEventListener('click', stopTask);
@@ -1773,155 +1904,155 @@ window.projectsAPI.onChanged((st) => { applyState(st); });
 // Persistencia e restauracao do historico visual
 // ============================================================
 async function persistTimeline() {
-  const projectId = state.activeProjectId;
-  const chatId = state.activeChatUuid;
-  if (!projectId || !chatId) return;
-  if (!window.historyAPI) return;
+	const projectId = state.activeProjectId;
+	const chatId = state.activeChatUuid;
+	if (!projectId || !chatId) return;
+	if (!window.historyAPI) return;
 
-  const content = $('chatContent');
-  if (!content) return;
+	const content = $('chatContent');
+	if (!content) return;
 
-  const entries = [];
-  const nodes = [];
-  const children = content.children;
-  for (let i = 0; i < children.length; i++) {
-    const node = children[i];
-    if (!node || node.dataset.hist === '1') continue;
-    if (node.id === 'emptyState') continue;
-    if (node.classList.contains('compacting')) continue;
-    if (node.classList.contains('live-status')) continue;
-    if (node.classList.contains('stream-box')) continue;
-    if (node.classList.contains('history-more')) continue;
+	const entries = [];
+	const nodes = [];
+	const children = content.children;
+	for (let i = 0; i < children.length; i++) {
+		const node = children[i];
+		if (!node || node.dataset.hist === '1') continue;
+		if (node.id === 'emptyState') continue;
+		if (node.classList.contains('compacting')) continue;
+		if (node.classList.contains('live-status')) continue;
+		if (node.classList.contains('stream-box')) continue;
+		if (node.classList.contains('history-more')) continue;
 
-    let kind = 'assistant';
-    if (node.classList.contains('msg-row') && node.classList.contains('user')) kind = 'user';
-    else if (node.classList.contains('activity')) kind = 'event';
-    else if (node.classList.contains('session-marker')) kind = 'system';
-    else if (node.classList.contains('msg-row')) kind = 'assistant';
-    else continue;
+		let kind = 'assistant';
+		if (node.classList.contains('msg-row') && node.classList.contains('user')) kind = 'user';
+		else if (node.classList.contains('activity')) kind = 'event';
+		else if (node.classList.contains('session-marker')) kind = 'system';
+		else if (node.classList.contains('msg-row')) kind = 'assistant';
+		else continue;
 
-    const clone = node.cloneNode(true);
-    const reviewBtn = clone.querySelector('.review-btn');
-    if (reviewBtn) reviewBtn.remove();
-    const detailsList = clone.querySelectorAll('details[open]');
-    for (const d of detailsList) d.removeAttribute('open');
+		const clone = node.cloneNode(true);
+		const reviewBtn = clone.querySelector('.review-btn');
+		if (reviewBtn) reviewBtn.remove();
+		const detailsList = clone.querySelectorAll('details[open]');
+		for (const d of detailsList) d.removeAttribute('open');
 
-    entries.push({ t: Date.now(), kind, html: clone.outerHTML });
-    nodes.push(node);
-  }
+		entries.push({ t: Date.now(), kind, html: clone.outerHTML });
+		nodes.push(node);
+	}
 
-  if (!entries.length) return;
+	if (!entries.length) return;
 
-  try {
-    const res = await window.historyAPI.append(projectId, chatId, entries);
-    if (res && res.ok) {
-      for (const node of nodes) node.dataset.hist = '1';
-    }
-  } catch (e) {}
+	try {
+		const res = await window.historyAPI.append(projectId, chatId, entries);
+		if (res && res.ok) {
+			for (const node of nodes) node.dataset.hist = '1';
+		}
+	} catch (e) { }
 }
 
 // Limpeza minima (sem allowlist) para restaurar HTML ja gravado.
 function cleanHistoryNode(node) {
-  if (!node || node.nodeType !== 1) return node;
-  const bad = node.querySelectorAll('script, iframe, object, embed');
-  for (const el of Array.from(bad)) el.remove();
-  const all = [node].concat(Array.from(node.querySelectorAll('*')));
-  for (const el of all) {
-    if (el.nodeType !== 1) continue;
-    for (const attr of Array.from(el.attributes)) {
-      const name = attr.name.toLowerCase();
-      if (name.indexOf('on') === 0) { el.removeAttribute(attr.name); continue; }
-      if (name === 'href' || name === 'src') {
-        const val = (el.getAttribute(attr.name) || '').trim().toLowerCase();
-        if (val.indexOf('javascript:') === 0) el.removeAttribute(attr.name);
-      }
-    }
-  }
-  return node;
+	if (!node || node.nodeType !== 1) return node;
+	const bad = node.querySelectorAll('script, iframe, object, embed');
+	for (const el of Array.from(bad)) el.remove();
+	const all = [node].concat(Array.from(node.querySelectorAll('*')));
+	for (const el of all) {
+		if (el.nodeType !== 1) continue;
+		for (const attr of Array.from(el.attributes)) {
+			const name = attr.name.toLowerCase();
+			if (name.indexOf('on') === 0) { el.removeAttribute(attr.name); continue; }
+			if (name === 'href' || name === 'src') {
+				const val = (el.getAttribute(attr.name) || '').trim().toLowerCase();
+				if (val.indexOf('javascript:') === 0) el.removeAttribute(attr.name);
+			}
+		}
+	}
+	return node;
 }
 
 function entryToNode(html) {
-  const template = document.createElement('template');
-  template.innerHTML = String(html || '');
-  const node = template.content.firstElementChild;
-  if (!node) return null;
-  return cleanHistoryNode(node);
+	const template = document.createElement('template');
+	template.innerHTML = String(html || '');
+	const node = template.content.firstElementChild;
+	if (!node) return null;
+	return cleanHistoryNode(node);
 }
 
 async function restoreHistory() {
-  const projectId = state.activeProjectId;
-  const chatId = state.activeChatUuid;
-  if (!projectId || !chatId) return;
-  if (!window.historyAPI) return;
+	const projectId = state.activeProjectId;
+	const chatId = state.activeChatUuid;
+	if (!projectId || !chatId) return;
+	if (!window.historyAPI) return;
 
-  try {
-    const res = await window.historyAPI.readLast(projectId, chatId);
-    if (!res || !Array.isArray(res.entries) || res.entries.length === 0) return;
+	try {
+		const res = await window.historyAPI.readLast(projectId, chatId);
+		if (!res || !Array.isArray(res.entries) || res.entries.length === 0) return;
 
-    ensureEmptyRemoved();
-    const content = $('chatContent');
-    for (const entry of res.entries) {
-      const node = entryToNode(entry.html);
-      if (!node) continue;
-      node.dataset.hist = '1';
-      content.appendChild(node);
-    }
-    scrollToBottom();
+		ensureEmptyRemoved();
+		const content = $('chatContent');
+		for (const entry of res.entries) {
+			const node = entryToNode(entry.html);
+			if (!node) continue;
+			node.dataset.hist = '1';
+			content.appendChild(node);
+		}
+		scrollToBottom();
 
-    state.histPage = res.page || 1;
-    state.histTotal = res.totalPages || 1;
+		state.histPage = res.page || 1;
+		state.histTotal = res.totalPages || 1;
 
-    if (state.histTotal > 1 && state.histPage > 1) {
-      insertHistoryMoreButton();
-    }
-  } catch (e) {}
+		if (state.histTotal > 1 && state.histPage > 1) {
+			insertHistoryMoreButton();
+		}
+	} catch (e) { }
 }
 
 function insertHistoryMoreButton() {
-  const content = $('chatContent');
-  if (!content) return;
-  if (content.querySelector('.history-more')) return;
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'history-more';
-  btn.textContent = 'Carregar mensagens anteriores';
-  btn.addEventListener('click', loadPreviousHistoryPage);
-  content.insertBefore(btn, content.firstChild);
+	const content = $('chatContent');
+	if (!content) return;
+	if (content.querySelector('.history-more')) return;
+	const btn = document.createElement('button');
+	btn.type = 'button';
+	btn.className = 'history-more';
+	btn.textContent = 'Carregar mensagens anteriores';
+	btn.addEventListener('click', loadPreviousHistoryPage);
+	content.insertBefore(btn, content.firstChild);
 }
 
 async function loadPreviousHistoryPage() {
-  const projectId = state.activeProjectId;
-  const chatId = state.activeChatUuid;
-  if (!projectId || !chatId) return;
-  if (!window.historyAPI) return;
-  const btn = document.querySelector('#chatContent .history-more');
-  if (!btn) return;
-  const targetPage = state.histPage - 1;
-  if (targetPage < 1) { btn.remove(); return; }
+	const projectId = state.activeProjectId;
+	const chatId = state.activeChatUuid;
+	if (!projectId || !chatId) return;
+	if (!window.historyAPI) return;
+	const btn = document.querySelector('#chatContent .history-more');
+	if (!btn) return;
+	const targetPage = state.histPage - 1;
+	if (targetPage < 1) { btn.remove(); return; }
 
-  try {
-    const res = await window.historyAPI.readPage(projectId, chatId, targetPage);
-    if (!res || !Array.isArray(res.entries) || res.entries.length === 0) {
-      btn.remove();
-      return;
-    }
-    const content = $('chatContent');
-    const timeline = $('timeline');
-    const prevHeight = timeline ? timeline.scrollHeight : 0;
+	try {
+		const res = await window.historyAPI.readPage(projectId, chatId, targetPage);
+		if (!res || !Array.isArray(res.entries) || res.entries.length === 0) {
+			btn.remove();
+			return;
+		}
+		const content = $('chatContent');
+		const timeline = $('timeline');
+		const prevHeight = timeline ? timeline.scrollHeight : 0;
 
-    for (const entry of res.entries) {
-      const node = entryToNode(entry.html);
-      if (!node) continue;
-      node.dataset.hist = '1';
-      content.insertBefore(node, btn);
-    }
+		for (const entry of res.entries) {
+			const node = entryToNode(entry.html);
+			if (!node) continue;
+			node.dataset.hist = '1';
+			content.insertBefore(node, btn);
+		}
 
-    state.histPage = targetPage;
-    if (state.histPage <= 1) btn.remove();
+		state.histPage = targetPage;
+		if (state.histPage <= 1) btn.remove();
 
-    if (timeline) {
-      const newHeight = timeline.scrollHeight;
-      timeline.scrollTop = timeline.scrollTop + (newHeight - prevHeight);
-    }
-  } catch (e) {}
+		if (timeline) {
+			const newHeight = timeline.scrollHeight;
+			timeline.scrollTop = timeline.scrollTop + (newHeight - prevHeight);
+		}
+	} catch (e) { }
 }

@@ -74,6 +74,10 @@
       <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
       <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none" />
     </symbol>
+    <symbol id="i-history" viewBox="0 0 24 24">
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+      <path d="M3 3v5h5M12 7v5l3 2" />
+    </symbol>
   </svg>
 
   <div class="app">
@@ -135,6 +139,11 @@
               <use href="#i-package" />
             </svg><span>Compactar</span>
           </button>
+          <button class="toolbar-btn" id="btnCommits" type="button" title="Ver commits e restaurar um ponto do projeto">
+            <svg class="i">
+              <use href="#i-history" />
+            </svg><span>Commits</span>
+          </button>
         </div>
       </header>
 
@@ -182,6 +191,19 @@
         </div>
       </footer>
     </section>
+
+    <!-- COMMITS -->
+    <aside class="commits-panel" id="commitsPanel" aria-label="Commits" style="display:none">
+      <div class="commits-head">
+        <div>
+          <div class="commits-title">Commits</div>
+          <div class="commits-sub" id="commitsSub">—</div>
+        </div>
+        <button class="icon-btn" id="btnCommitsRefresh" type="button" aria-label="Atualizar lista" title="Atualizar lista">↻</button>
+        <button class="icon-btn" id="btnCommitsClose" type="button" aria-label="Fechar" title="Fechar">✕</button>
+      </div>
+      <div class="commits-list" id="commitsList"></div>
+    </aside>
 
   </div>
 
@@ -287,6 +309,24 @@
         <button class="btn" id="runModalDeny" type="button">✕ Bloquear todos</button>
         <button class="btn primary" id="runModalRun" type="button">▶ Executar selecionados (<span
             id="runModalCount">0</span>)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: restaurar commit -->
+  <div id="modalRestore" class="modal" style="display:none">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2>Restaurar este ponto?</h2>
+        <p id="modalRestoreCaption"></p>
+      </div>
+      <div class="modal-body">
+        <div id="modalRestoreInfo"></div>
+        <div id="modalRestoreWarn" style="display:none"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="modalRestoreCancel" type="button">Cancelar</button>
+        <button class="btn primary" id="modalRestoreConfirm" type="button">↩ Restaurar</button>
       </div>
     </div>
   </div>

@@ -1,0 +1,49 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: ubuntu-latest
+            target: linux
+          - os: macos-latest
+            target: mac
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias Linux
+        if: matrix.target == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y rpm fakeroot dpkg
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Build
+        run: npm run make
+
+      - name: Upload artefatos
+        uses: actions/upload-artifact@v4
+        with:
+          name: opendeepseek-${{ matrix.target }}
+          path: out/make/**
+          if-no-files-found: error

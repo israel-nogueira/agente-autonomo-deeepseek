@@ -99,17 +99,17 @@ function createSplashWindow() {
 
 function splashStatus(message) {
   if (!splashWindow || splashWindow.isDestroyed()) return;
-  try { splashWindow.webContents.send('splash:status', { message: message }); } catch (e) {}
+  try { splashWindow.webContents.send('splash:status', { message: message }); } catch (e) { }
 }
 
 function splashError(message) {
   if (!splashWindow || splashWindow.isDestroyed()) return;
-  try { splashWindow.webContents.send('splash:error', { message: message }); } catch (e) {}
+  try { splashWindow.webContents.send('splash:error', { message: message }); } catch (e) { }
 }
 
 function closeSplash() {
   if (splashWindow && !splashWindow.isDestroyed()) {
-    try { splashWindow.close(); } catch (e) {}
+    try { splashWindow.close(); } catch (e) { }
     splashWindow = null;
   }
 }
@@ -165,9 +165,9 @@ function loadRunAllowlistIntoMemory(projectId) {
       try {
         projects.setRunAllowlist(projectId, alive);
         projects.setRunAllowlistTs(projectId, aliveTs);
-      } catch (e) {}
+      } catch (e) { }
     }
-  } catch (e) {}
+  } catch (e) { }
 }
 
 // A memoria (runAllowlist) e' a fonte da verdade. Para cada cmd em
@@ -199,7 +199,7 @@ function persistRunAllowlist() {
     for (const cmd of toRemove) runAllowlist.delete(cmd);
     projects.setRunAllowlist(activeProjectId, alive);
     projects.setRunAllowlistTs(activeProjectId, aliveTs);
-  } catch (e) {}
+  } catch (e) { }
 }
 
 // Remove do Set em memoria (e do projeto, gravando as duas estruturas)
@@ -224,7 +224,7 @@ function addToRunAllowlist(cmd) {
     if (list.indexOf(trimmed) === -1) list.push(trimmed);
     projects.setRunAllowlist(activeProjectId, list);
     projects.setRunAllowlistTs(activeProjectId, ts);
-  } catch (e) {}
+  } catch (e) { }
 }
 
 function applyActiveState() {
@@ -244,7 +244,7 @@ function applyActiveState() {
 
 function notifyProjectsChanged() {
   if (win && !win.isDestroyed()) {
-    try { win.webContents.send('projects:changed', buildProjectsState()); } catch (e) {}
+    try { win.webContents.send('projects:changed', buildProjectsState()); } catch (e) { }
   }
 }
 
@@ -352,9 +352,9 @@ function createAgentWindow() {
   win.webContents.setWindowOpenHandler(({ url }) => {
     try {
       if (typeof url === 'string' && /^https?:/i.test(url)) {
-        shell.openExternal(url).catch(() => {});
+        shell.openExternal(url).catch(() => { });
       }
-    } catch (e) {}
+    } catch (e) { }
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (event, url) => {
@@ -362,10 +362,10 @@ function createAgentWindow() {
       if (typeof url === 'string' && url.split('#')[0] === indexUrl) return;
       event.preventDefault();
       if (typeof url === 'string' && /^https?:/i.test(url)) {
-        shell.openExternal(url).catch(() => {});
+        shell.openExternal(url).catch(() => { });
       }
     } catch (e) {
-      try { event.preventDefault(); } catch (_) {}
+      try { event.preventDefault(); } catch (_) { }
     }
   });
 
@@ -431,7 +431,7 @@ function createChatWindow() {
         try { if (window.module) delete window.module; } catch (e) {}
         return 'OK';
       })()
-    `).catch(() => {});
+    `).catch(() => { });
     disableDeepSeekFeatures(chatWindow);
   });
 
@@ -779,7 +779,7 @@ ipcMain.handle('projects:create', async (event, opts) => {
     applyActiveState();
     resetReadCache();
     if (chatReady()) {
-      try { await chatWindow.loadURL('https://chat.deepseek.com/'); } catch (e) {}
+      try { await chatWindow.loadURL('https://chat.deepseek.com/'); } catch (e) { }
     }
     notifyProjectsChanged();
     return { ok: true, project: p, state: buildProjectsState(), stats: stats() };
@@ -847,7 +847,7 @@ ipcMain.handle('projects:delete', async (event, { projectId, remote }) => {
         try {
           await chatWindow.loadURL(url);
           await waitChatReady(chatWindow, NAVIGATION_TIMEOUT_MS);
-        } catch (e) {}
+        } catch (e) { }
       }
     }
 
@@ -956,7 +956,7 @@ ipcMain.handle('projects:deleteChat', async (event, { projectId, uuid, remote })
       try {
         await chatWindow.loadURL(nextUrl);
         await waitChatReady(chatWindow, NAVIGATION_TIMEOUT_MS);
-      } catch (e) {}
+      } catch (e) { }
     }
 
     if (wantRemote && !isPending) {
@@ -967,7 +967,7 @@ ipcMain.handle('projects:deleteChat', async (event, { projectId, uuid, remote })
           try {
             await chatWindow.loadURL(prevUrl);
             await waitChatReady(chatWindow, NAVIGATION_TIMEOUT_MS);
-          } catch (e) {}
+          } catch (e) { }
         }
         return {
           ok: false, error: r.error || 'DeepSeek recusou apagar o chat. O registro local foi mantido.',
@@ -1126,17 +1126,32 @@ ipcMain.handle('git:commit', async (event, { projectRoot, slug, files, task }) =
   catch (e) { return { ok: false, error: e.message }; }
 });
 
+ipcMain.handle('git:log', async (event, { projectRoot, slug, limit }) => {
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio' };
+  if (typeof slug !== 'string' || !slug.trim()) return { ok: false, error: 'slug vazio' };
+  try { return await gitguard.listCommits(projectRoot, slug, limit); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('git:restore', async (event, { projectRoot, slug, hash }) => {
+  if (running) return { ok: false, error: 'existe uma tarefa em andamento. Aguarde ou clique em Parar.' };
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio' };
+  if (typeof slug !== 'string' || !slug.trim()) return { ok: false, error: 'slug vazio' };
+  try { return await gitguard.restoreCommit(projectRoot, slug, String(hash || '')); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
 // ============================================================
 // ABORT
 // ============================================================
 ipcMain.handle('agent:abort', async () => {
   if (!running) return { ok: false, error: 'nenhuma tarefa em andamento' };
   abortRequested = true;
-  if (chatReady()) { try { requestAbort(chatWindow); } catch (e) {} }
+  if (chatReady()) { try { requestAbort(chatWindow); } catch (e) { } }
   try {
     const n = killActiveProcesses();
     if (n > 0) console.log('[main] abort: ' + n + ' processo(s) RUN morto(s)');
-  } catch (e) {}
+  } catch (e) { }
   return { ok: true };
 });
 
@@ -1164,7 +1179,7 @@ async function syncPendingChat(sendLog) {
         activeChatUuid = uuid;
         try { history.renameChat(activeProjectId, oldPendingUuid, uuid); } catch (e) { sendLog('[main] history.renameChat falhou: ' + e.message); }
         sendLog('[main] placeholder substituido por chat real: ' + uuid);
-        try { persistActiveChatState(); } catch (e) {}
+        try { persistActiveChatState(); } catch (e) { }
 
         const realChat = projects.getChat(activeProjectId, activeChatUuid);
         if (realChat && realChat.label) {
@@ -1206,11 +1221,11 @@ async function syncPendingChat(sendLog) {
 // RUN
 // ============================================================
 ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
-  const sendLog = (msg) => { try { event.sender.send('agent:log', msg); } catch (e) {} };
-  const sendCommand = (cmd) => { try { event.sender.send('agent:command', cmd); } catch (e) {} };
-  const sendResult = (r) => { try { event.sender.send('agent:result', r); } catch (e) {} };
-  const sendStream = (text) => { try { event.sender.send('agent:stream', { text: text }); } catch (e) {} };
-  const sendTurn = (turnLog) => { currentTurnLog = turnLog; try { event.sender.send('agent:stats', statsLive()); } catch (e) {} };
+  const sendLog = (msg) => { try { event.sender.send('agent:log', msg); } catch (e) { } };
+  const sendCommand = (cmd) => { try { event.sender.send('agent:command', cmd); } catch (e) { } };
+  const sendResult = (r) => { try { event.sender.send('agent:result', r); } catch (e) { } };
+  const sendStream = (text) => { try { event.sender.send('agent:stream', { text: text }); } catch (e) { } };
+  const sendTurn = (turnLog) => { currentTurnLog = turnLog; try { event.sender.send('agent:stats', statsLive()); } catch (e) { } };
 
   if (typeof task !== 'string' || !task.trim()) return { ok: false, error: 'task vazia', stats: stats() };
   if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio', stats: stats() };
@@ -1244,7 +1259,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
   } catch (e) { sendLog('[main] guarda de branch falhou: ' + e.message); }
 
   // Descarta comandos expirados/sem timestamp antes de rodar.
-  try { pruneRunAllowlist(); } catch (e) {}
+  try { pruneRunAllowlist(); } catch (e) { }
 
   if (!activeChatUuid) {
     const ph = createPendingChat();
@@ -1254,7 +1269,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
 
   const wasPending = typeof activeChatUuid === 'string' && activeChatUuid.indexOf('pending-') === 0;
 
-  try { pruneSessionLog(sessionLog); } catch (e) {}
+  try { pruneSessionLog(sessionLog); } catch (e) { }
 
   currentRunId++;
   const myRunId = currentRunId;
@@ -1306,7 +1321,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
     persistRunAllowlist();
 
     currentTurnLog = null;
-    try { pruneSessionLog(sessionLog); } catch (e) {}
+    try { pruneSessionLog(sessionLog); } catch (e) { }
     notifyProjectsChanged();
 
     return {
@@ -1348,7 +1363,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
 // COMPACT
 // ============================================================
 ipcMain.handle('agent:compact', async (event) => {
-  const sendLog = (msg) => { try { event.sender.send('agent:log', msg); } catch (e) {} };
+  const sendLog = (msg) => { try { event.sender.send('agent:log', msg); } catch (e) { } };
   sendLog('[main] agent:compact solicitado');
 
   if (running) return { ok: false, error: 'existe uma tarefa em andamento.', stats: stats() };
@@ -1402,7 +1417,7 @@ ipcMain.handle('agent:compact', async (event) => {
             projects.updateChatState(activeProjectId, ph, {
               sessionLog: sessionLog, tasksCount: 0, lastSummary: lastSummary,
             });
-          } catch (e) {}
+          } catch (e) { }
           await syncPendingChat(sendLog);
         } else {
           sendLog('[main] compact: chat resetado mas nao foi possivel criar placeholder');
@@ -1469,9 +1484,9 @@ async function waitChatReadyOrLogin() {
     if (!chatReady()) throw e;
   }
   splashStatus('Faça login no DeepSeek na janela que abriu…');
-  try { chatWindow.show(); chatWindow.focus(); } catch (e) {}
+  try { chatWindow.show(); chatWindow.focus(); } catch (e) { }
   await waitChatReady(chatWindow, LOGIN_TIMEOUT_MS);
-  try { chatWindow.hide(); } catch (e) {}
+  try { chatWindow.hide(); } catch (e) { }
 }
 
 async function appBoot() {
@@ -1498,7 +1513,7 @@ function onBootSuccess() {
   closeSplash();
   if (win && !win.isDestroyed()) {
     win.show(); win.focus();
-    try { win.webContents.send('app:ready', { ok: true }); } catch (e) {}
+    try { win.webContents.send('app:ready', { ok: true }); } catch (e) { }
   }
 }
 
@@ -1531,7 +1546,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
-  try { persistActiveChatState(); persistRunAllowlist(); projects.flush(); } catch (e) {}
+  try { persistActiveChatState(); persistRunAllowlist(); projects.flush(); } catch (e) { }
   SUCCEEDED_THIS_SESSION.clear();
   saveWindowState();
 });

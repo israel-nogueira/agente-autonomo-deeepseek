@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('agentAPI', {
   gitStatus: (projectRoot, slug) => ipcRenderer.invoke('git:status', { projectRoot, slug }),
   gitCreateBranch: (projectRoot, slug) => ipcRenderer.invoke('git:createBranch', { projectRoot, slug }),
   gitCommit: (projectRoot, slug, files, task) => ipcRenderer.invoke('git:commit', { projectRoot, slug, files, task }),
+  gitLog: (projectRoot, slug, limit) => ipcRenderer.invoke('git:log', { projectRoot, slug, limit }),
+  gitRestore: (projectRoot, slug, hash) => ipcRenderer.invoke('git:restore', { projectRoot, slug, hash }),
   compact: () => ipcRenderer.invoke('agent:compact'),
   resetSession: () => ipcRenderer.invoke('agent:resetSession'),
   stats: () => ipcRenderer.invoke('agent:stats'),

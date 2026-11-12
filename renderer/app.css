@@ -774,3 +774,29 @@ button{cursor:pointer}
 .stream-box .stream-text code {
   font-size: 11px;
 }
+
+/* Commits panel */
+.app.commits-open{grid-template-columns:264px minmax(0,1fr) 340px}
+.commits-panel{display:flex;flex-direction:column;min-height:0;min-width:0;background:var(--side);border-left:1px solid var(--border)}
+.commits-head{height:68px;padding:0 10px 0 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;background:#0d121b}
+.commits-head>div:first-child{flex:1;min-width:0}
+.commits-title{font-weight:700;font-size:14px}
+.commits-sub{font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.commits-list{flex:1;min-height:0;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:6px;scrollbar-width:thin;scrollbar-color:#344158 transparent}
+.commits-empty{padding:18px 8px;color:var(--dim);font-size:12px;text-align:center}
+.commit-item{display:block;width:100%;text-align:left;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:9px 11px;color:var(--text)}
+.commit-item:hover{border-color:#5477b4;background:#192842}
+.commit-item.is-restore{border-color:#6b5a2a;background:#1d1a12}
+.commit-item.is-restore:hover{border-color:#b8923a;background:#262013}
+.commit-item.is-head{border-left:3px solid var(--blue)}
+.commit-subject{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.commit-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin-top:4px;font-size:11px;color:var(--muted)}
+.commit-hash{font-family:var(--mono);color:var(--blue)}
+.commit-item.is-restore .commit-hash{color:#e0b64f}
+.commit-add{color:#7fd3ad}
+.commit-del{color:#f08a8a}
+.commit-badge{font-size:10px;font-weight:700;padding:1px 6px;border-radius:999px;background:#2b3a55;color:#b9c9dc}
+.restore-info{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.restore-warn{padding:10px 12px;border-radius:8px;background:#3b2f10;border:1px solid #6b5a2a;color:#f3d98b;font-size:12px}
+@media (max-width:800px){.app.commits-open{grid-template-columns:214px minmax(0,1fr) 300px}}
+@media (max-width:600px){.app.commits-open{grid-template-columns:minmax(0,1fr)}.commits-panel{display:none!important}}

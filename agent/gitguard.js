@@ -79,4 +79,88 @@ async function commitFiles(projectRoot, slug, files, taskText) {
   return { ok: true, hash: h.ok ? h.out : '' };
 }
 
-module.exports = { branchNameFor, gitStatus, createBranch, commitFiles };
+function parseStatLine(txt) {
+  const f = /(\d+) files? changed/.exec(txt);
+  const i = /(\d+) insertions?\(\+\)/.exec(txt);
+  const d = /(\d+) deletions?\(-\)/.exec(txt);
+  return {
+    files: f ? parseInt(f[1], 10) : 0,
+    insertions: i ? parseInt(i[1], 10) : 0,
+    deletions: d ? parseInt(d[1], 10) : 0,
+  };
+}
+
+async function listCommits(projectRoot, slug, limit) {
+  const st = await gitStatus(projectRoot, slug);
+  if (st.state !== 'ok') {
+    return { ok: false, error: 'lista de commits so e permitida na branch "' + st.expected + '" (estado: ' + st.state + ').' };
+  }
+  let n = parseInt(limit, 10);
+  if (!Number.isFinite(n) || n < 1) n = 50;
+  if (n > 200) n = 200;
+  const r = await git(projectRoot, ['log', '-n', String(n), '--shortstat', '--format=%x1e%H%x1f%h%x1f%at%x1f%s']);
+  if (!r.ok) return { ok: false, error: r.err || 'falha no git log' };
+  const commits = [];
+  const chunks = r.out.split('\x1e');
+  for (const chunk of chunks) {
+    if (!chunk.trim()) continue;
+    const nl = chunk.indexOf('\n');
+    const header = nl === -1 ? chunk : chunk.slice(0, nl);
+    const rest = nl === -1 ? '' : chunk.slice(nl + 1);
+    const p = header.split('\x1f');
+    if (p.length < 4) continue;
+    const subject = p.slice(3).join('\x1f').trim();
+    const stat = parseStatLine(rest);
+    const rm = /^restore:\s*([0-9a-f]{7,40})\b/i.exec(subject);
+    commits.push({
+      hash: p[0],
+      short: p[1],
+      ts: parseInt(p[2], 10) * 1000,
+      subject: subject,
+      files: stat.files,
+      insertions: stat.insertions,
+      deletions: stat.deletions,
+      isRestore: !!rm,
+      restoreOf: rm ? rm[1] : '',
+    });
+  }
+  const dirtyRes = await git(projectRoot, ['status', '--porcelain', '--untracked-files=no']);
+  const dirty = (dirtyRes.ok && dirtyRes.out)
+    ? dirtyRes.out.split('\n').filter(function (l) { return l.trim(); }).length
+    : 0;
+  return { ok: true, branch: st.current, commits: commits, dirty: dirty };
+}
+
+async function restoreCommit(projectRoot, slug, hash) {
+  const st = await gitStatus(projectRoot, slug);
+  if (st.state !== 'ok') {
+    return { ok: false, error: 'restore so e permitido na branch "' + st.expected + '" (estado: ' + st.state + ').' };
+  }
+  const h = String(hash || '').trim();
+  if (!/^[0-9a-f]{7,40}$/i.test(h)) return { ok: false, error: 'hash invalido.' };
+  const full = await git(projectRoot, ['rev-parse', '--verify', '--quiet', h + '^{commit}']);
+  if (!full.ok || !full.out) return { ok: false, error: 'commit nao encontrado.' };
+  const anc = await git(projectRoot, ['merge-base', '--is-ancestor', full.out, 'HEAD']);
+  if (!anc.ok) return { ok: false, error: 'esse commit nao pertence ao historico da branch atual.' };
+  const treeTarget = await git(projectRoot, ['rev-parse', full.out + '^{tree}']);
+  const treeHead = await git(projectRoot, ['rev-parse', 'HEAD^{tree}']);
+  if (!treeTarget.ok || !treeHead.ok) return { ok: false, error: 'falha ao ler a arvore dos commits.' };
+  if (treeTarget.out === treeHead.out) return { ok: false, error: 'o projeto ja esta identico a esse commit.' };
+  const info = await git(projectRoot, ['log', '-1', '--format=%h%x1f%s', full.out]);
+  if (!info.ok) return { ok: false, error: info.err || 'falha ao ler o commit.' };
+  const parts = info.out.split('\x1f');
+  const short = parts[0];
+  const subj = parts.slice(1).join('\x1f').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const rt = await git(projectRoot, ['read-tree', '--reset', '-u', full.out]);
+  if (!rt.ok) return { ok: false, error: rt.err || 'falha no git read-tree' };
+  const msg = 'restore: ' + short + (subj ? ' - ' + subj : '');
+  const c = await git(projectRoot, ['commit', '-m', msg]);
+  if (!c.ok) {
+    await git(projectRoot, ['read-tree', '--reset', '-u', 'HEAD']);
+    return { ok: false, error: c.out || c.err || 'falha no git commit (alteracoes desfeitas).' };
+  }
+  const nh = await git(projectRoot, ['rev-parse', '--short', 'HEAD']);
+  return { ok: true, hash: nh.ok ? nh.out : '', restoredTo: short };
+}
+
+module.exports = { branchNameFor, gitStatus, createBranch, commitFiles, listCommits, restoreCommit };
