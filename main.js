@@ -408,12 +408,18 @@ function setTrayState(state) {
   try {
     if (process.platform === 'win32' && win && !win.isDestroyed()) {
       if (next === 'idle') {
-        try { console.log('[overlay] estado=idle (removendo)'); } catch (e) { /* ignora */ }
+        try { 
+          // console.log('[overlay] estado=idle (removendo)'); 
+        } catch (e) { /* ignora */ }
         try {
           win.setOverlayIcon(null, '');
-          try { console.log('[overlay] setOverlayIcon chamado OK'); } catch (e) { /* ignora */ }
+          try { 
+            // console.log('[overlay] setOverlayIcon chamado OK'); 
+          } catch (e) { /* ignora */ }
         } catch (e) {
-          try { console.log('[overlay] ERRO: ' + (e && e.message ? e.message : String(e))); } catch (_) { /* ignora */ }
+          try { 
+            // console.log('[overlay] ERRO: ' + (e && e.message ? e.message : String(e)));
+           } catch (_) { /* ignora */ }
         }
       } else {
         const overlay = overlayIconForState(next);
@@ -569,7 +575,7 @@ function createAgentWindow() {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   attachStateSaver(win);
   // debug: mantido enquanto voce esta desenvolvendo
-  // win.webContents.openDevTools({ mode: 'detach' });
+  win.webContents.openDevTools({ mode: 'detach' });
 
   // ITEM 8: bloquear navegacao e novas janelas da janela principal.
   // - novas janelas: sempre deny; http/https abrem no navegador externo.
@@ -1604,6 +1610,22 @@ ipcMain.handle('git:restore', async (event, { projectRoot, slug, hash }) => {
   if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio' };
   if (typeof slug !== 'string' || !slug.trim()) return { ok: false, error: 'slug vazio' };
   try { return await gitguard.restoreCommit(projectRoot, slug, String(hash || '')); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('git:branches', async (event, { projectRoot, slug }) => {
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio' };
+  if (typeof slug !== 'string' || !slug.trim()) return { ok: false, error: 'slug vazio' };
+  try { return await gitguard.listBranches(projectRoot, slug); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('git:merge', async (event, { projectRoot, slug, target }) => {
+  if (running) return { ok: false, error: 'existe uma tarefa em andamento. Aguarde ou clique em Parar.' };
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio' };
+  if (typeof slug !== 'string' || !slug.trim()) return { ok: false, error: 'slug vazio' };
+  if (typeof target !== 'string' || !target.trim()) return { ok: false, error: 'branch de destino vazia' };
+  try { return await gitguard.mergeInto(projectRoot, slug, target.trim()); }
   catch (e) { return { ok: false, error: e.message }; }
 });
 

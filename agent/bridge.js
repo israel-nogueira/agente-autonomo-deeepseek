@@ -844,15 +844,15 @@ async function ask(chatView, prompt, onProgress) {
   if (currentAbortRequested) throw new Error('ABORTED_BY_USER');
 
   let beforeCount = 0;
-  try { beforeCount = await countAssistantMessages(chatView); } catch (e) {}
+  try { beforeCount = await countAssistantMessages(chatView); } catch (e) { }
 
   let beforeText = '';
   try {
     beforeText = await chatView.webContents.executeJavaScript(
       "(function() {" +
-        "var msgs = document.querySelectorAll(" + JSON.stringify(SEL.assistantMsg) + ");" +
-        "if (msgs.length === 0) return '';" +
-        "return msgs[msgs.length - 1].innerText || '';" +
+      "var msgs = document.querySelectorAll(" + JSON.stringify(SEL.assistantMsg) + ");" +
+      "if (msgs.length === 0) return '';" +
+      "return msgs[msgs.length - 1].innerText || '';" +
       "})()"
     );
     if (typeof beforeText !== 'string') beforeText = '';
@@ -862,7 +862,14 @@ async function ask(chatView, prompt, onProgress) {
     await sendPrompt(chatView, prompt);
     const r = await waitForReply(chatView, 240000, beforeCount, beforeText, onProgress);
     const lr = await getLastReply(chatView, beforeCount);
-    return { text: r.text || lr.text, html: r.html || lr.html };
+    // O DeepSeek as vezes perde um ">" do DONE: <<<DONE: x>> vira <<<DONE: x>>>
+    const fixText = function (t) {
+      return String(t || '').replace(/(<<<\s*DONE\b[^<>\n]*?)>>(?!>)/gi, '$1>>>');
+    };
+    const fixHtml = function (h) {
+      return String(h || '').replace(/(&lt;&lt;&lt;\s*DONE\b(?:(?!&gt;)[^<\n])*?)&gt;&gt;(?!&gt;)/gi, '$1&gt;&gt;&gt;');
+    };
+    return { text: fixText(r.text || lr.text), html: fixHtml(r.html || lr.html) };
   } catch (e) {
     if (e && e.message === 'ABORTED_BY_USER') throw e;
     throw new Error('[bridge] ' + e.message);

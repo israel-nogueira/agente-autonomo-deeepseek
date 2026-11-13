@@ -706,8 +706,10 @@ async function glob(safe, root, arg) {
   if (matches.length === 0) {
     return { ok: true, msg: '<<<RESULT:GLOB:' + pattern + ':0 matches>>>\n<<<END>>>' };
   }
+  const aviso = truncated ? '\n[Lista incompleta: so os 200 primeiros de ' + matches.length + '. Para ver o resto use o comando LS por pasta, ou GLOB filtrado por pasta ou extensao.]' : '';
+  return { ok: true, msg: '<<<RESULT:GLOB:' + pattern + ':' + matches.length + ' matches' + (truncated ? ' (truncado em 200)' : '') + '>>>\n' + limited.join('\n') + aviso + '\n<<<END>>>' };
 
-  return { ok: true, msg: '<<<RESULT:GLOB:' + pattern + ':' + matches.length + ' matches' + (truncated ? ' (truncado em 200)' : '') + '>>>\n' + limited.join('\n') + '\n<<<END>>>' };
+  // return { ok: true, msg: '<<<RESULT:GLOB:' + pattern + ':' + matches.length + ' matches' + (truncated ? ' (truncado em 200)' : '') + '>>>\n' + limited.join('\n') + '\n<<<END>>>' };
 }
 
 // ============================================================

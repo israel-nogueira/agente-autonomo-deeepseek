@@ -34,6 +34,7 @@ let overlayTimer = null;
 let overlayRetryFn = null;
 
 let pendingRestore = null;
+let pendingMerge = null;
 let diffState = null;
 let diffToken = 0;
 
@@ -320,6 +321,28 @@ function openRestoreModal(project, c, dirty) {
 		warn.style.display = 'none';
 	}
 	$('modalRestore').style.display = 'flex';
+}
+
+async function openMergeModal() {
+	if (state.running) { showDiag('Aguarde a tarefa terminar para aplicar o merge.', false); return; }
+	const project = state.projects.find(p => p.id === state.activeProjectId);
+	if (!project || !project.projectRoot || !project.slug) { showDiag('Selecione um projeto com pasta raiz.', false); return; }
+	let r = null;
+	try { r = await window.agentAPI.gitBranches(project.projectRoot, project.slug); }
+	catch (e) { r = { ok: false, error: e.message }; }
+	if (!r || !r.ok) { showDiag('Falha ao listar as branches: ' + ((r && r.error) || 'erro desconhecido'), false); return; }
+	if (!r.branches.length) { showDiag('Não há outra branch para receber o merge.', false); return; }
+	pendingMerge = { project: project, agent: r.agent };
+	$('modalMergeCaption').textContent = 'Todas as alterações da branch "' + r.agent + '" serão aplicadas em 1 único commit (squash) na branch escolhida. Depois, a branch do agente volta a ficar igual ao destino e a lista de commits recomeça.';
+	const sel = $('modalMergeSelect');
+	sel.innerHTML = '';
+	r.branches.forEach(function (b) {
+		const o = document.createElement('option');
+		o.value = b;
+		o.textContent = b;
+		sel.appendChild(o);
+	});
+	$('modalMerge').style.display = 'flex';
 }
 
 function diffPathParts(p) {
@@ -2245,6 +2268,32 @@ $('modalRestoreConfirm').addEventListener('click', async () => {
 	$('modalRestore').style.display = 'none';
 	pendingRestore = null;
 	try { closeDiffModal(); } catch (e) { }
+	await refreshCommitsPanel();
+});
+$('btnCommitsMerge').addEventListener('click', openMergeModal);
+$('modalMergeCancel').addEventListener('click', () => {
+	$('modalMerge').style.display = 'none';
+	pendingMerge = null;
+});
+$('modalMergeConfirm').addEventListener('click', async () => {
+	if (!pendingMerge || state.running) return;
+	const pm = pendingMerge;
+	const target = $('modalMergeSelect').value;
+	if (!target) return;
+	const btn = $('modalMergeConfirm');
+	btn.disabled = true;
+	btn.textContent = '⏳ Aplicando…';
+	try {
+		const r = await window.agentAPI.gitMerge(pm.project.projectRoot, pm.project.slug, target);
+		if (r && r.ok) showDiag('Merge aplicado em "' + target + '"' + (r.hash ? ' (commit ' + r.hash + ')' : '') + '. A branch do agente foi zerada.', true);
+		else showDiag('Falha no merge: ' + ((r && r.error) || 'erro desconhecido'), false);
+	} catch (e) {
+		showDiag('Erro no merge: ' + e.message, false);
+	}
+	btn.disabled = false;
+	btn.textContent = 'Aplicar';
+	$('modalMerge').style.display = 'none';
+	pendingMerge = null;
 	await refreshCommitsPanel();
 });
 $('sessionFilter').addEventListener('input', renderChats);

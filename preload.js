@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('agentAPI', {
   gitCommit: (projectRoot, slug, files, task) => ipcRenderer.invoke('git:commit', { projectRoot, slug, files, task }),
   gitLog: (projectRoot, slug, limit) => ipcRenderer.invoke('git:log', { projectRoot, slug, limit }),
   gitRestore: (projectRoot, slug, hash) => ipcRenderer.invoke('git:restore', { projectRoot, slug, hash }),
+  gitBranches: (projectRoot, slug) => ipcRenderer.invoke('git:branches', { projectRoot, slug }),
+  gitMerge: (projectRoot, slug, target) => ipcRenderer.invoke('git:merge', { projectRoot, slug, target }),
   gitDiffFiles: (projectRoot, slug, hash, mode) => ipcRenderer.invoke('git:diff-files', { projectRoot, slug, hash, mode }),
   gitDiffFile: (projectRoot, slug, hash, mode, file) => ipcRenderer.invoke('git:diff-file', { projectRoot, slug, hash, mode, file }),
   compact: () => ipcRenderer.invoke('agent:compact'),

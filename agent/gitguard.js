@@ -374,4 +374,65 @@ async function restoreCommit(projectRoot, slug, hash) {
   return { ok: true, hash: nh.ok ? nh.out : '', restoredTo: short };
 }
 
-module.exports = { branchNameFor, gitStatus, createBranch, commitFiles, commitAll, listCommits, restoreCommit, commitDiffFiles, commitFileDiff };
+async function listBranches(projectRoot, slug) {
+  const st = await gitStatus(projectRoot, slug);
+  if (st.state !== 'ok') {
+    return { ok: false, error: 'listar branches so e permitido na branch "' + st.expected + '" (estado: ' + st.state + ').' };
+  }
+  const r = await git(projectRoot, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/']);
+  if (!r.ok) return { ok: false, error: r.err || 'falha ao listar as branches' };
+  const branches = r.out.split('\n').map(function (b) { return b.trim(); }).filter(function (b) { return b && b !== st.expected; });
+  return { ok: true, agent: st.expected, branches: branches };
+}
+
+async function mergeInto(projectRoot, slug, target) {
+  const st = await gitStatus(projectRoot, slug);
+  if (st.state !== 'ok') {
+    return { ok: false, error: 'merge so e permitido na branch "' + st.expected + '" (estado: ' + st.state + ').' };
+  }
+  const agent = st.expected;
+  const dest = String(target || '').trim();
+  if (!dest) return { ok: false, error: 'branch de destino vazia.' };
+  if (dest === agent) return { ok: false, error: 'o destino nao pode ser a propria branch do agente.' };
+  const chk = await git(projectRoot, ['check-ref-format', '--branch', dest]);
+  if (!chk.ok) return { ok: false, error: 'nome de branch invalido: ' + dest };
+  const exists = await git(projectRoot, ['show-ref', '--verify', '--quiet', 'refs/heads/' + dest]);
+  if (!exists.ok) return { ok: false, error: 'a branch "' + dest + '" nao existe.' };
+  const dirty = await git(projectRoot, ['status', '--porcelain', '--untracked-files=no']);
+  if (!dirty.ok) return { ok: false, error: dirty.err || 'falha ao ler o status do git.' };
+  if (dirty.out) return { ok: false, error: 'existem alteracoes nao commitadas. Faca commit ou descarte antes do merge.' };
+  const ahead = await git(projectRoot, ['rev-list', '--count', dest + '..' + agent]);
+  if (!ahead.ok) return { ok: false, error: ahead.err || 'falha ao comparar as branches.' };
+  if (ahead.out === '0') return { ok: false, error: 'a branch "' + dest + '" ja contem todos os commits do agente.' };
+  const co = await git(projectRoot, ['checkout', dest]);
+  if (!co.ok) return { ok: false, error: co.err || ('falha ao trocar para a branch "' + dest + '".') };
+  const back = async function () {
+    await git(projectRoot, ['reset', '--hard', 'HEAD']);
+    await git(projectRoot, ['checkout', agent]);
+  };
+  const mg = await git(projectRoot, ['merge', '--squash', agent]);
+  if (!mg.ok) {
+    await back();
+    return { ok: false, error: (mg.out || mg.err || 'conflito no merge') + ' (nada foi alterado).' };
+  }
+  const staged = await git(projectRoot, ['diff', '--cached', '--quiet']);
+  if (staged.ok) {
+    await back();
+    return { ok: false, error: 'as alteracoes do agente ja estao em "' + dest + '": nada a aplicar.' };
+  }
+  const msg = 'merge: ' + agent + ' -> ' + dest + ' (squash)';
+  const c = await git(projectRoot, ['commit', '-m', msg]);
+  if (!c.ok) {
+    await back();
+    return { ok: false, error: c.out || c.err || 'falha no git commit (nada foi alterado).' };
+  }
+  const nh = await git(projectRoot, ['rev-parse', '--short', 'HEAD']);
+  const hash = nh.ok ? nh.out : '';
+  const co2 = await git(projectRoot, ['checkout', agent]);
+  if (!co2.ok) return { ok: false, merged: true, hash: hash, error: 'merge aplicado em "' + dest + '" (' + hash + '), mas falhou ao voltar para "' + agent + '": ' + (co2.err || '') };
+  const rs = await git(projectRoot, ['reset', '--hard', dest]);
+  if (!rs.ok) return { ok: false, merged: true, hash: hash, error: 'merge aplicado em "' + dest + '" (' + hash + '), mas falhou ao zerar "' + agent + '": ' + (rs.err || '') };
+  return { ok: true, hash: hash, target: dest };
+}
+
+module.exports = { branchNameFor, gitStatus, createBranch, commitFiles, commitAll, listCommits, restoreCommit, commitDiffFiles, commitFileDiff, listBranches, mergeInto };

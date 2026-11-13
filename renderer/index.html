@@ -200,6 +200,8 @@
           <div class="commits-title">Commits</div>
           <div class="commits-sub" id="commitsSub">—</div>
         </div>
+        <button class="btn" id="btnCommitsMerge" type="button" title="Aplicar as alterações do agente em outra branch"
+          style="padding:6px 10px;font-size:12px;white-space:nowrap">Aplicar merge</button>
         <button class="icon-btn" id="btnCommitsRefresh" type="button" aria-label="Atualizar lista"
           title="Atualizar lista">↻</button>
         <button class="icon-btn" id="btnCommitsClose" type="button" aria-label="Fechar" title="Fechar">✕</button>
@@ -323,10 +325,10 @@
           <div class="diff-meta" id="diffMeta"></div>
         </div>
         <!-- <div class="diff-tabs"> -->
-          <!-- <button class="diff-tab active" id="diffTabCommit" type="button">Alterações deste commit</button> -->
-          <!-- <button class="diff-tab" id="diffTabCurrent" type="button">Comparar com o atual</button> -->
+        <!-- <button class="diff-tab active" id="diffTabCommit" type="button">Alterações deste commit</button> -->
+        <!-- <button class="diff-tab" id="diffTabCurrent" type="button">Comparar com o atual</button> -->
         <!-- </div> -->
-       
+
       </div>
       <div class="diff-body">
         <aside class="diff-files" id="diffFiles"></aside>
@@ -362,6 +364,24 @@
       <div class="modal-footer">
         <button class="btn" id="modalRestoreCancel" type="button">Cancelar</button>
         <button class="btn primary" id="modalRestoreConfirm" type="button">↩ Restaurar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: aplicar merge -->
+  <div id="modalMerge" class="modal" style="display:none">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2>Aplicar merge</h2>
+        <p id="modalMergeCaption"></p>
+      </div>
+      <div class="modal-body">
+        <select id="modalMergeSelect"
+          style="width:100%;padding:10px 12px;background:#0d121b;color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:13px"></select>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="modalMergeCancel" type="button">Cancelar</button>
+        <button class="btn primary" id="modalMergeConfirm" type="button">Aplicar</button>
       </div>
     </div>
   </div>
