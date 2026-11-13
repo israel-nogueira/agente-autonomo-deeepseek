@@ -10,7 +10,7 @@
 //   { type: 'write', path, content }    → comando WRITE
 //   { type: 'edit', path, oldRef, oldStr, newStr } → comando EDIT
 //   { type: 'run', cmd: '...' }         → comando RUN
-//   { type: 'done' }                    → DONE
+//   { type: 'done', title: '...' }      → DONE (titulo opcional: <<<DONE: titulo>>>)
 //   { type: 'truncated', what, reason } → bloco malformado
 //
 // HTML: o texto solto E o conteudo dentro de blocos com body (WRITE/EDIT/RUN)
@@ -61,7 +61,7 @@ function parseResponse(text) {
 
     if (tag === 'DONE') {
       flushPendingText();
-      segments.push({ type: 'done' });
+      segments.push({ type: 'done', title: arg });
       pos = markerEnd;
       continue;
     }

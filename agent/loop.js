@@ -78,10 +78,10 @@ async function tryAttachReadResult(chatView, projectRoot, cmd, result, log) {
       return {
         ok: true,
         msg: '<<<RESULT:READ:' + rel + ':ok — arquivo anexado (' + sizeKb + 'kb)>>>\n' +
-             '[O conteudo completo de ' + rel + ' esta no ANEXO desta mensagem, numerado no formato NNNN|linha.]\n' +
-             '[Para OLD_REF use os IDs abaixo com linhas INICIO-FIM:]\n' +
-             refLines + '\n' +
-             '<<<END>>>',
+          '[O conteudo completo de ' + rel + ' esta no ANEXO desta mensagem, numerado no formato NNNN|linha.]\n' +
+          '[Para OLD_REF use os IDs abaixo com linhas INICIO-FIM:]\n' +
+          refLines + '\n' +
+          '<<<END>>>',
         attached: true,
         attachedName: fileName,
         attachedSize: content.length,
@@ -142,7 +142,7 @@ function detectRunAntipattern(cmd) {
     return 'VOCE USOU sed/awk/perl via RUN. Use <<<EDIT>>>.';
   }
   if (/\$env:/i.test(c) ||
-      /\b(Get|Set|Remove|New|Copy|Move|Test|Start|Stop)-[A-Z]\w+|\b(Select|Where|ForEach|Sort|Group|Measure|Write|Out|Invoke)-[A-Z]\w+|\b2>\$null\b|\bWrite-Host\b/.test(c)) {
+    /\b(Get|Set|Remove|New|Copy|Move|Test|Start|Stop)-[A-Z]\w+|\b(Select|Where|ForEach|Sort|Group|Measure|Write|Out|Invoke)-[A-Z]\w+|\b2>\$null\b|\bWrite-Host\b/.test(c)) {
     return 'VOCE USOU SINTAXE POWERSHELL, mas o shell padrao e cmd.exe.';
   }
   if (/^\s*["'][^"']*[*?][^"']*["']/.test(c)) {
@@ -185,7 +185,7 @@ function buildInitialInstruction() {
     '4. NAO fragmente READ. Use READ:caminho sem range.',
     '5. Depois de ler, planeje e edite (EDIT/WRITE).',
     '6. Use texto solto para narrar.',
-    '7. Emita <<<DONE>>> SOZINHO quando terminar.',
+    '7. Emita <<<DONE: titulo curto do commit>>> SOZINHO quando terminar (titulo e uma frase curta em pt-BR descrevendo o que foi feito, sem os caracteres < e >).',
     '',
   ].join('\n');
 }
@@ -219,21 +219,30 @@ function countTruncatedEdit(truncated, editFailCounts, totalEditFails, turn) {
   return null;
 }
 
+function sanitizeCommitTitle(s) {
+  let t = String(s || '');
+  t = t.replace(/\s+/g, ' ').trim();
+  t = t.replace(/[<>]/g, '');
+  t = t.replace(/^["']+|["']+$/g, '').trim();
+  if (t.length > 72) t = t.slice(0, 72);
+  return t;
+}
+
 async function runAgent(opts) {
   const task = opts.task;
   const projectRoot = opts.projectRoot;
   const chatView = opts.chatView;
   const sessionLog = opts.sessionLog;
-  const onLog = opts.onLog || function () {};
-  const onCommand = opts.onCommand || function () {};
-  const onResult = opts.onResult || function () {};
-  const onTurn = opts.onTurn || function () {};
-  const onStream = opts.onStream || function () {};
+  const onLog = opts.onLog || function () { };
+  const onCommand = opts.onCommand || function () { };
+  const onResult = opts.onResult || function () { };
+  const onTurn = opts.onTurn || function () { };
+  const onStream = opts.onStream || function () { };
   const shouldAbort = opts.shouldAbort || function () { return false; };
   const confirmRunBatch = opts.confirmRunBatch;
   const runAllowlist = opts.runAllowlist;
   const onAlwaysAllow = opts.onAlwaysAllow;
-  const onFirstReply = opts.onFirstReply || async function () {};
+  const onFirstReply = opts.onFirstReply || async function () { };
   const needsPreload = !!opts.needsPreload;
   const log = function (msg) { onLog(msg); };
 
@@ -320,6 +329,7 @@ async function runAgent(opts) {
 
   let turn = 1;
   let explorationStreak = 0;
+  let doneTitle = '';
 
   const editFailCounts = new Map();
   const totalEditFails = { count: 0 };
@@ -378,6 +388,8 @@ async function runAgent(opts) {
         return s.type !== 'text' && s.type !== 'done' && s.type !== 'truncated';
       });
       let hasDone = segments.some(function (s) { return s.type === 'done'; });
+      const doneSeg = segments.find(function (s) { return s.type === 'done' && s.title && s.title.length > 0; });
+      if (doneSeg) doneTitle = doneSeg.title;
 
       // Envia tudo pra tela de uma vez: texto e cards pendentes, na ordem em
       // que aparecem na resposta. Cada comando ganha o id aqui; a execucao
@@ -420,7 +432,7 @@ async function runAgent(opts) {
         if (idleReplies > 2) {
           hasDone = true;
         } else {
-          const r = await askAndLog('[Voce terminou? Se SIM, responda somente <<<DONE>>>. Se ainda precisa ver algo (arquivo, trecho, busca, saida de comando), EMITA o comando agora (READ, GREP, GLOB, LS ou RUN) em vez de apenas descrever que falta.]', false);
+          const r = await askAndLog('[Voce terminou? Se SIM, responda somente <<<DONE: titulo curto do commit>>> (titulo e uma frase curta em pt-BR descrevendo o que foi feito, sem os caracteres < e >). Se ainda precisa ver algo (arquivo, trecho, busca, saida de comando), EMITA o comando agora (READ, GREP, GLOB, LS ou RUN) em vez de apenas descrever que falta.]', false);
           reply = r.text;
           replyHtml = r.html || r.text;
           turn++;
@@ -430,19 +442,19 @@ async function runAgent(opts) {
 
       if (hasDone && workCmds.length === 0) {
         let finalSummary = reply || '';
-        finalSummary = finalSummary.replace(/<<<DONE>>>/g, '').trim();
+        finalSummary = finalSummary.replace(/<<<DONE(?::[^>]*)?>>>/g, '').trim();
 
         const touchedFiles = await existingTouched();
         const needsReview = touchedFiles.length > 0;
         const reviewPrompt = needsReview
           ? ('Revise as alteracoes que voce acabou de fazer nos seguintes arquivos:\n' +
-             touchedFiles.map(function (f) { return '- ' + f; }).join('\n') +
-             '\n\nLeia cada arquivo alterado (<<<READ:caminho>>>) e verifique: ' +
-             'se a mudanca atende exatamente a tarefa original, ' +
-             'se nao quebrou a sintaxe, se nao introduziu regressao, ' +
-             'e se o estilo e a indentacao estao consistentes. ' +
-             'Corrija o que estiver errado com <<<EDIT>>>. ' +
-             'Se estiver tudo certo, emita <<<DONE>>> SOZINHO.')
+            touchedFiles.map(function (f) { return '- ' + f; }).join('\n') +
+            '\n\nLeia cada arquivo alterado (<<<READ:caminho>>>) e verifique: ' +
+            'se a mudanca atende exatamente a tarefa original, ' +
+            'se nao quebrou a sintaxe, se nao introduziu regressao, ' +
+            'e se o estilo e a indentacao estao consistentes. ' +
+            'Corrija o que estiver errado com <<<EDIT>>>. ' +
+            'Se estiver tudo certo, emita <<<DONE: titulo curto do commit>>> SOZINHO (titulo e uma frase curta em pt-BR descrevendo o que foi feito, sem os caracteres < e >).')
           : '';
 
         return {
@@ -452,6 +464,7 @@ async function runAgent(opts) {
           needsReview: needsReview,
           touchedFiles: touchedFiles,
           reviewPrompt: reviewPrompt,
+          commitTitle: sanitizeCommitTitle(doneTitle),
         };
       }
 
@@ -656,7 +669,7 @@ async function runAgent(opts) {
         }
 
         if (hasDone && hasWriteOrEdit && !hasError) {
-          const r = await askAndLog('Voce emitiu <<<DONE>>> junto de um EDIT/WRITE. Se a tarefa NAO esta completa, continue. Se esta completa, emita <<<DONE>>> SOZINHO.', false);
+          const r = await askAndLog('Voce emitiu <<<DONE: titulo curto do commit>>> junto de um EDIT/WRITE. Se a tarefa NAO esta completa, continue. Se esta completa, emita <<<DONE: titulo curto do commit>>> SOZINHO (titulo e uma frase curta em pt-BR descrevendo o que foi feito, sem os caracteres < e >).', false);
           reply = r.text;
           replyHtml = r.html || r.text;
           turn++;
@@ -665,7 +678,7 @@ async function runAgent(opts) {
         }
 
         if (explorationStreak >= MAX_EXPLORATION_TURNS && !hasError && !hasDone) {
-          const r = await askAndLog('Voce ja explorou ' + explorationStreak + ' turnos sem editar. Emita <<<EDIT>>> AGORA, ou <<<DONE>>> se a tarefa terminou.', false);
+          const r = await askAndLog('Voce ja explorou ' + explorationStreak + ' turnos sem editar. Emita <<<EDIT>>> AGORA, ou <<<DONE: titulo curto do commit>>> se a tarefa terminou (titulo e uma frase curta em pt-BR descrevendo o que foi feito, sem os caracteres < e >).', false);
           reply = r.text;
           replyHtml = r.html || r.text;
           turn++;
@@ -687,20 +700,20 @@ async function runAgent(opts) {
 
       if (hasDone) {
         let finalSummary = reply || '';
-        finalSummary = finalSummary.replace(/<<<DONE>>>/g, '');
+        finalSummary = finalSummary.replace(/<<<DONE(?::[^>]*)?>>>/g, '');
         finalSummary = finalSummary.trim();
 
         const touchedFiles = await existingTouched();
         const needsReview = touchedFiles.length > 0;
         const reviewPrompt = needsReview
           ? ('Revise as alteracoes que voce acabou de fazer nos seguintes arquivos:\n' +
-             touchedFiles.map(function (f) { return '- ' + f; }).join('\n') +
-             '\n\nLeia cada arquivo alterado (<<<READ:caminho>>>) e verifique: ' +
-             'se a mudanca atende exatamente a tarefa original, ' +
-             'se nao quebrou a sintaxe, se nao introduziu regressao, ' +
-             'e se o estilo e a indentacao estao consistentes. ' +
-             'Corrija o que estiver errado com <<<EDIT>>>. ' +
-             'Se estiver tudo certo, emita <<<DONE>>> SOZINHO.')
+            touchedFiles.map(function (f) { return '- ' + f; }).join('\n') +
+            '\n\nLeia cada arquivo alterado (<<<READ:caminho>>>) e verifique: ' +
+            'se a mudanca atende exatamente a tarefa original, ' +
+            'se nao quebrou a sintaxe, se nao introduziu regressao, ' +
+            'e se o estilo e a indentacao estao consistentes. ' +
+            'Corrija o que estiver errado com <<<EDIT>>>. ' +
+            'Se estiver tudo certo, emita <<<DONE: titulo curto do commit>>> SOZINHO (titulo e uma frase curta em pt-BR descrevendo o que foi feito, sem os caracteres < e >).')
           : '';
 
         return {
@@ -710,6 +723,7 @@ async function runAgent(opts) {
           needsReview: needsReview,
           touchedFiles: touchedFiles,
           reviewPrompt: reviewPrompt,
+          commitTitle: sanitizeCommitTitle(doneTitle),
         };
       }
 

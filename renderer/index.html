@@ -175,7 +175,8 @@
 
       <footer class="composer-area">
         <div class="work-dots" id="workDots" style="display:none" aria-label="Trabalhando">
-          <span></span><span></span><span></span></div>
+          <span></span><span></span><span></span>
+        </div>
         <div class="composer" id="composer">
           <textarea id="messageInput" rows="2" placeholder="Peça uma alteração, investigação ou correção no projeto..."
             aria-label="Mensagem para o agente"></textarea>
@@ -199,7 +200,8 @@
           <div class="commits-title">Commits</div>
           <div class="commits-sub" id="commitsSub">—</div>
         </div>
-        <button class="icon-btn" id="btnCommitsRefresh" type="button" aria-label="Atualizar lista" title="Atualizar lista">↻</button>
+        <button class="icon-btn" id="btnCommitsRefresh" type="button" aria-label="Atualizar lista"
+          title="Atualizar lista">↻</button>
         <button class="icon-btn" id="btnCommitsClose" type="button" aria-label="Fechar" title="Fechar">✕</button>
       </div>
       <div class="commits-list" id="commitsList"></div>
@@ -309,6 +311,39 @@
         <button class="btn" id="runModalDeny" type="button">✕ Bloquear todos</button>
         <button class="btn primary" id="runModalRun" type="button">▶ Executar selecionados (<span
             id="runModalCount">0</span>)</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modalDiff" class="modal" style="display:none">
+    <div class="modal-panel diff-panel">
+      <div class="diff-head">
+        <div class="diff-head-info">
+          <div class="diff-title" id="diffTitle"></div>
+          <div class="diff-meta" id="diffMeta"></div>
+        </div>
+        <!-- <div class="diff-tabs"> -->
+          <!-- <button class="diff-tab active" id="diffTabCommit" type="button">Alterações deste commit</button> -->
+          <!-- <button class="diff-tab" id="diffTabCurrent" type="button">Comparar com o atual</button> -->
+        <!-- </div> -->
+       
+      </div>
+      <div class="diff-body">
+        <aside class="diff-files" id="diffFiles"></aside>
+        <section class="diff-view">
+          <div class="diff-cols-head">
+            <div id="diffLabelLeft">Original</div>
+            <div id="diffLabelRight">Alterado</div>
+          </div>
+          <div class="diff-viewer" id="diffViewer"></div>
+        </section>
+      </div>
+      <div class="diff-foot">
+        <div class="diff-summary" id="diffSummary"></div>
+        <div class="diff-foot-actions">
+          <button class="btn" id="diffClose" type="button">Cancelar</button>
+          <button class="btn primary" id="diffRestore" type="button">↩ Restaurar commit</button>
+        </div>
       </div>
     </div>
   </div>

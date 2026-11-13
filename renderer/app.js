@@ -33,6 +33,10 @@ let editingProjectId = null;
 let overlayTimer = null;
 let overlayRetryFn = null;
 
+let pendingRestore = null;
+let diffState = null;
+let diffToken = 0;
+
 function fmtNum(n) { return (n || 0).toLocaleString('pt-BR'); }
 function timeNow() {
 	return new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -220,8 +224,6 @@ async function refreshGitBanner() {
 	b.style.display = 'flex';
 }
 
-let pendingRestore = null;
-
 function fmtCommitDate(ts) {
 	const d = new Date(ts);
 	return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' · ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -288,8 +290,7 @@ async function refreshCommitsPanel() {
 		btn.appendChild(subj);
 		btn.appendChild(meta);
 		btn.addEventListener('click', () => {
-			if (idx === 0) { showDiag('Este já é o commit atual.', true); return; }
-			openRestoreModal(project, c, r.dirty || 0);
+			openDiffModal(project, c, idx === 0, r.dirty || 0);
 		});
 		list.appendChild(btn);
 	});
@@ -319,6 +320,456 @@ function openRestoreModal(project, c, dirty) {
 		warn.style.display = 'none';
 	}
 	$('modalRestore').style.display = 'flex';
+}
+
+function diffPathParts(p) {
+	const norm = String(p || '').replace(/\\/g, '/');
+	const idx = norm.lastIndexOf('/');
+	if (idx === -1) return { dir: '', name: norm };
+	return { dir: norm.slice(0, idx), name: norm.slice(idx + 1) };
+}
+
+function setActiveDiffTab(mode) {
+	const tc = $('diffTabCommit');
+	const tu = $('diffTabCurrent');
+	if (tc) tc.classList.toggle('active', mode === 'commit');
+	if (tu) tu.classList.toggle('active', mode === 'current');
+}
+
+function setDiffLabels(mode) {
+	const left = $('diffLabelLeft');
+	const right = $('diffLabelRight');
+	if (!left || !right) return;
+	if (mode === 'current') {
+		left.textContent = 'Neste commit (depois de restaurar)';
+		right.textContent = 'Atual (como está agora)';
+	} else {
+		left.textContent = 'Novo (neste commit)';
+		right.textContent = 'Antigo (antes do commit)';
+	}
+}
+
+async function openDiffModal(project, c, isHead, dirty) {
+	diffState = {
+		project: project,
+		commit: c,
+		isHead: !!isHead,
+		dirty: dirty || 0,
+		mode: 'commit',
+		files: [],
+		activePath: '',
+		token: ++diffToken,
+		cache: {},
+	};
+	const title = $('diffTitle');
+	const meta = $('diffMeta');
+	if (title) title.textContent = c.isRestore ? '↩ Restore para ' + c.restoreOf : c.subject;
+	if (meta) meta.textContent = c.short + ' · ' + fmtCommitDate(c.ts) + ' · ' + c.files + (c.files === 1 ? ' arquivo' : ' arquivos');
+	setActiveDiffTab('commit');
+	setDiffLabels('commit');
+	const restoreBtn = $('diffRestore');
+	if (restoreBtn) {
+		restoreBtn.disabled = !!isHead;
+		restoreBtn.title = isHead ? 'Este já é o commit atual' : '';
+	}
+	$('modalDiff').style.display = 'flex';
+	loadDiffFiles();
+}
+
+function setDiffMode(mode) {
+	if (!diffState) return;
+	const normalized = (mode === 'current') ? 'current' : 'commit';
+	if (diffState.mode === normalized) return;
+	diffState.mode = normalized;
+	diffState.cache = {};
+	diffState.activePath = '';
+	setActiveDiffTab(normalized);
+	setDiffLabels(normalized);
+	loadDiffFiles();
+}
+
+function clearDiffFilesAndViewer(msgFiles, msgViewer) {
+	const files = $('diffFiles');
+	const viewer = $('diffViewer');
+	if (files) {
+		files.innerHTML = '';
+		if (msgFiles) {
+			const d = document.createElement('div');
+			d.className = 'diff-empty';
+			d.textContent = msgFiles;
+			files.appendChild(d);
+		}
+	}
+	if (viewer) {
+		viewer.innerHTML = '';
+		if (msgViewer) {
+			const d = document.createElement('div');
+			d.className = 'diff-note';
+			d.textContent = msgViewer;
+			viewer.appendChild(d);
+		}
+	}
+	const sum = $('diffSummary');
+	if (sum) sum.textContent = '';
+}
+
+async function loadDiffFiles() {
+	if (!diffState) return;
+	const myToken = ++diffToken;
+	diffState.token = myToken;
+	const files = $('diffFiles');
+	if (files) {
+		files.innerHTML = '';
+		const ld = document.createElement('div');
+		ld.className = 'diff-empty';
+		ld.textContent = 'Carregando…';
+		files.appendChild(ld);
+	}
+	const viewer = $('diffViewer');
+	if (viewer) viewer.innerHTML = '';
+
+	const project = diffState.project;
+	let r = null;
+	try {
+		r = await window.agentAPI.gitDiffFiles(project.projectRoot, project.slug, diffState.commit.hash, diffState.mode);
+	} catch (e) {
+		r = { ok: false, error: e.message };
+	}
+	if (!diffState || diffState.token !== myToken) return;
+
+	if (!r || !r.ok) {
+		const msg = (r && r.error) || 'Falha ao carregar diff.';
+		clearDiffFilesAndViewer(msg, msg);
+		return;
+	}
+
+	const list = Array.isArray(r.files) ? r.files : [];
+	diffState.files = list;
+
+	if (!list.length) {
+		clearDiffFilesAndViewer('Nenhuma diferença nesta comparação.', 'Sem diferenças de texto.');
+		return;
+	}
+
+	const listEl = $('diffFiles');
+	if (listEl) listEl.innerHTML = '';
+
+	let totalAdd = 0;
+	let totalDel = 0;
+	for (const f of list) {
+		totalAdd += (f && typeof f.additions === 'number') ? f.additions : 0;
+		totalDel += (f && typeof f.deletions === 'number') ? f.deletions : 0;
+	}
+
+	if (listEl) {
+		for (const f of list) {
+			const btn = document.createElement('button');
+			btn.type = 'button';
+			btn.className = 'diff-file';
+			btn.dataset.path = f.path;
+			btn.title = f.path;
+
+			const top = document.createElement('div');
+			top.className = 'diff-file-top';
+			const badge = document.createElement('span');
+			const st = (f.status === 'A' || f.status === 'M' || f.status === 'D') ? f.status : 'M';
+			badge.className = 'diff-badge ' + st;
+			badge.textContent = st;
+			const parts = diffPathParts(f.path);
+			const name = document.createElement('span');
+			name.className = 'diff-file-name';
+			name.textContent = parts.name;
+			top.appendChild(badge);
+			top.appendChild(name);
+
+			const stat = document.createElement('div');
+			stat.className = 'diff-file-stat';
+			if (f.binary) {
+				const b = document.createElement('span');
+				b.textContent = 'bin';
+				stat.appendChild(b);
+			} else {
+				const adds = (typeof f.additions === 'number') ? f.additions : 0;
+				const dels = (typeof f.deletions === 'number') ? f.deletions : 0;
+				if (adds > 0) {
+					const a = document.createElement('span');
+					a.className = 'diff-add';
+					a.textContent = '+' + adds;
+					stat.appendChild(a);
+				}
+				if (dels > 0) {
+					const d = document.createElement('span');
+					d.className = 'diff-del';
+					d.textContent = '-' + dels;
+					stat.appendChild(d);
+				}
+			}
+			btn.appendChild(top);
+			if (parts.dir) {
+				const dir = document.createElement('div');
+				dir.className = 'diff-file-dir';
+				dir.textContent = parts.dir;
+				btn.appendChild(dir);
+			}
+			btn.appendChild(stat);
+			btn.addEventListener('click', () => { selectDiffFile(f.path); });
+			listEl.appendChild(btn);
+		}
+	}
+
+	const summary = $('diffSummary');
+	if (summary) {
+		let txt = list.length + (list.length === 1 ? ' arquivo' : ' arquivos') + ' · +' + totalAdd + ' −' + totalDel;
+		if (r.truncated) {
+			txt += ' · mostrando ' + list.length + ' de ' + (typeof r.total === 'number' ? r.total : list.length);
+		}
+		summary.textContent = txt;
+	}
+
+	selectDiffFile(list[0].path);
+}
+
+async function selectDiffFile(path) {
+	if (!diffState) return;
+	diffState.activePath = path;
+	const listEl = $('diffFiles');
+	if (listEl) {
+		const nodes = listEl.querySelectorAll('.diff-file');
+		for (const n of nodes) {
+			if (n.dataset && n.dataset.path === path) n.classList.add('active');
+			else n.classList.remove('active');
+		}
+	}
+	const viewer = $('diffViewer');
+	if (viewer) {
+		viewer.innerHTML = '';
+		const ld = document.createElement('div');
+		ld.className = 'diff-note';
+		ld.textContent = 'Carregando…';
+		viewer.appendChild(ld);
+	}
+
+	const cacheKey = diffState.mode + ':' + path;
+	if (diffState.cache[cacheKey]) {
+		renderDiff(diffState.cache[cacheKey]);
+		return;
+	}
+
+	const myToken = diffState.token;
+	const project = diffState.project;
+	let r = null;
+	try {
+		r = await window.agentAPI.gitDiffFile(project.projectRoot, project.slug, diffState.commit.hash, diffState.mode, path);
+	} catch (e) {
+		r = { ok: false, error: e.message };
+	}
+	if (!diffState || diffState.token !== myToken || diffState.activePath !== path) return;
+
+	if (r && r.ok) diffState.cache[cacheKey] = r;
+	renderDiff(r);
+}
+
+function makeLineEl(cls, text) {
+	const el = document.createElement('div');
+	el.className = cls;
+	el.textContent = (text === undefined || text === null) ? '' : String(text);
+	return el;
+}
+
+function renderDiff(res) {
+	const viewer = $('diffViewer');
+	if (!viewer) return;
+	viewer.innerHTML = '';
+
+	if (!res || !res.ok) {
+		const msg = (res && res.error) || 'Falha ao carregar diff.';
+		const n = document.createElement('div');
+		n.className = 'diff-note';
+		n.textContent = msg;
+		viewer.appendChild(n);
+		return;
+	}
+	if (res.binary) {
+		const n = document.createElement('div');
+		n.className = 'diff-note';
+		n.textContent = 'Arquivo binário — sem pré-visualização.';
+		viewer.appendChild(n);
+		return;
+	}
+	const text = (typeof res.diff === 'string') ? res.diff : '';
+	if (!text.trim()) {
+		const n = document.createElement('div');
+		n.className = 'diff-note';
+		n.textContent = 'Sem diferenças de texto neste arquivo.';
+		viewer.appendChild(n);
+		return;
+	}
+
+	const rawLines = text.split('\n');
+	const lines = [];
+	for (let k = 0; k < rawLines.length; k++) {
+		let ln = rawLines[k];
+		if (ln.length > 0 && ln.charAt(ln.length - 1) === '\r') ln = ln.slice(0, -1);
+		lines.push(ln);
+	}
+	if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+	const grid = document.createElement('div');
+	grid.className = 'diff-grid';
+
+	let inHunk = false;
+	let oldNo = 0;
+	let newNo = 0;
+	let pendingOld = [];
+	let pendingNew = [];
+	let emitted = 0;
+
+	function appendEmptyLine() {
+		grid.appendChild(makeLineEl('diff-ln empty', ''));
+		grid.appendChild(makeLineEl('diff-code empty', ''));
+		grid.appendChild(makeLineEl('diff-ln empty', ''));
+		grid.appendChild(makeLineEl('diff-code empty', ''));
+		emitted++;
+	}
+
+	function flush() {
+		const maxLen = Math.max(pendingNew.length, pendingOld.length);
+		for (let i = 0; i < maxLen; i++) {
+			if (i < pendingNew.length) {
+				grid.appendChild(makeLineEl('diff-ln add', String(newNo)));
+				grid.appendChild(makeLineEl('diff-code add', pendingNew[i]));
+				newNo++;
+			} else {
+				grid.appendChild(makeLineEl('diff-ln empty', ''));
+				grid.appendChild(makeLineEl('diff-code empty', ''));
+			}
+			if (i < pendingOld.length) {
+				grid.appendChild(makeLineEl('diff-ln del', String(oldNo)));
+				grid.appendChild(makeLineEl('diff-code del', pendingOld[i]));
+				oldNo++;
+			} else {
+				grid.appendChild(makeLineEl('diff-ln empty', ''));
+				grid.appendChild(makeLineEl('diff-code empty', ''));
+			}
+			emitted++;
+		}
+		pendingNew = [];
+		pendingOld = [];
+	}
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+
+		if (!inHunk) {
+			if (line.indexOf('@@') === 0) {
+				inHunk = true;
+				const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+				let sepText = line;
+				if (m) {
+					const oldStart = parseInt(m[1], 10);
+					const oldCount = (m[2] !== undefined && m[2] !== '') ? parseInt(m[2], 10) : 1;
+					const newStart = parseInt(m[3], 10);
+					const newCount = (m[4] !== undefined && m[4] !== '') ? parseInt(m[4], 10) : 1;
+					oldNo = Number.isFinite(oldStart) ? oldStart : 0;
+					newNo = Number.isFinite(newStart) ? newStart : 0;
+					const start = (newCount > 0) ? newNo : oldNo;
+					const end = (newCount > 0) ? (newNo + newCount - 1) : (oldNo + oldCount - 1);
+					sepText = 'Linhas ' + start + '–' + end;
+				}
+				const sep = document.createElement('div');
+				sep.className = 'diff-sep';
+				sep.textContent = sepText;
+				grid.appendChild(sep);
+			}
+			continue;
+		}
+
+		if (line.indexOf('@@') === 0) {
+			flush();
+			const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+			let sepText = line;
+			if (m) {
+				const oldStart = parseInt(m[1], 10);
+				const oldCount = (m[2] !== undefined && m[2] !== '') ? parseInt(m[2], 10) : 1;
+				const newStart = parseInt(m[3], 10);
+				const newCount = (m[4] !== undefined && m[4] !== '') ? parseInt(m[4], 10) : 1;
+				oldNo = Number.isFinite(oldStart) ? oldStart : 0;
+				newNo = Number.isFinite(newStart) ? newStart : 0;
+				const start = (newCount > 0) ? newNo : oldNo;
+				const end = (newCount > 0) ? (newNo + newCount - 1) : (oldNo + oldCount - 1);
+				sepText = 'Linhas ' + start + '–' + end;
+			}
+			const sep = document.createElement('div');
+			sep.className = 'diff-sep';
+			sep.textContent = sepText;
+			grid.appendChild(sep);
+			continue;
+		}
+
+		if (line.indexOf('\\') === 0) continue;
+
+		if (line.length === 0) {
+			flush();
+			grid.appendChild(makeLineEl('diff-ln', String(newNo)));
+			grid.appendChild(makeLineEl('diff-code', ''));
+			grid.appendChild(makeLineEl('diff-ln', String(oldNo)));
+			grid.appendChild(makeLineEl('diff-code', ''));
+			newNo++;
+			oldNo++;
+			emitted++;
+			continue;
+		}
+
+		const ch = line.charAt(0);
+		if (ch === ' ') {
+			flush();
+			const content = line.slice(1);
+			grid.appendChild(makeLineEl('diff-ln', String(newNo)));
+			grid.appendChild(makeLineEl('diff-code', content));
+			grid.appendChild(makeLineEl('diff-ln', String(oldNo)));
+			grid.appendChild(makeLineEl('diff-code', content));
+			newNo++;
+			oldNo++;
+			emitted++;
+			continue;
+		}
+		if (ch === '+') {
+			pendingNew.push(line.slice(1));
+			continue;
+		}
+		if (ch === '-') {
+			pendingOld.push(line.slice(1));
+			continue;
+		}
+
+		flush();
+		appendEmptyLine();
+	}
+
+	flush();
+
+	if (emitted === 0) {
+		const n = document.createElement('div');
+		n.className = 'diff-note';
+		n.textContent = 'Sem diferenças de texto neste arquivo.';
+		viewer.appendChild(n);
+		return;
+	}
+
+	viewer.appendChild(grid);
+	if (res.truncated) {
+		const n = document.createElement('div');
+		n.className = 'diff-note';
+		n.textContent = 'Diff muito grande: mostrando só o início.';
+		viewer.appendChild(n);
+	}
+}
+
+function closeDiffModal() {
+	const m = $('modalDiff');
+	if (m) m.style.display = 'none';
+	diffState = null;
+	diffToken++;
 }
 
 function applyState(st) {
@@ -1075,7 +1526,7 @@ function addCommandCard(cmd) {
 	return card;
 }
 
-function renderDiff(diff) {
+function renderDiffLines(diff) {
 	let html = '';
 	if (diff.removed && diff.removed.length) {
 		for (const l of diff.removed) html += '<span class="diff-remove">- ' + escapeHtml(l) + '</span>';
@@ -1127,7 +1578,7 @@ function attachResultToCard(card, result) {
 	if (type === 'edit' || type === 'write') {
 		if (result.diff) {
 			if (desc) desc.textContent = (result.diff.added && result.diff.added.length) + ' linha(s) adicionada(s) · ' + (result.diff.removed && result.diff.removed.length) + ' removida(s)';
-			if (detail) detail.innerHTML = renderDiff(result.diff);
+			if (detail) detail.innerHTML = renderDiffLines(result.diff);
 			if (trailing) trailing.innerHTML = '<span class="tag warn">diff</span><svg class="i"><use href="#i-chevron"/></svg>';
 			return;
 		}
@@ -1387,7 +1838,13 @@ async function executeRun(task, opts) {
 			}
 		}
 		if (res.ok && res.result && Array.isArray(res.result.touchedFiles) && res.result.touchedFiles.length > 0) {
-			appendCommitButtons(projectRoot, project, res.result.touchedFiles, opts.originalTask || task);
+			const commit = res.result.commit;
+			if (commit && commit.ok && !commit.skipped) {
+				showDiag('✅ Commit feito (' + (commit.hash || '') + '): ' + (commit.message || ''), true);
+			} else if (commit && !commit.ok) {
+				showDiag('Falha no commit automatico: ' + (commit.error || 'erro desconhecido'), false);
+			}
+			try { await refreshCommitsPanel(); } catch (e) { }
 		}
 		if (res.stats) applyStats(res.stats);
 		if (res.state) applyState(res.state);
@@ -1411,49 +1868,6 @@ async function runTask() {
 	const projectRoot = project ? project.projectRoot : '';
 	if (!projectRoot) return alert('Defina a pasta raiz do projeto (menu do projeto → Alterar pasta raiz).');
 	await executeRun(t, { displayUserText: t });
-}
-
-async function appendCommitButtons(projectRoot, project, files, taskText) {
-	if (!project || !projectRoot || !project.slug) return;
-	let st = null;
-	try { st = await window.agentAPI.gitStatus(projectRoot, project.slug); } catch (e) { return; }
-	if (!st || st.state !== 'ok') return;
-	const wraps = document.querySelectorAll('#chatContent .review-btn-wrap');
-	const wrap = wraps.length ? wraps[wraps.length - 1] : null;
-	if (!wrap || wrap.querySelector('.commit-btn')) return;
-	const reviewBtn = wrap.querySelector('.review-btn');
-	if (!reviewBtn) return;
-	const commitBtn = document.createElement('button');
-	commitBtn.className = 'review-btn commit-btn';
-	commitBtn.type = 'button';
-	commitBtn.textContent = '✅ Commitar';
-	const skipBtn = document.createElement('button');
-	skipBtn.className = 'review-btn skip-commit-btn';
-	skipBtn.type = 'button';
-	skipBtn.textContent = 'Não por enquanto';
-	reviewBtn.after(commitBtn, skipBtn);
-	skipBtn.addEventListener('click', () => { commitBtn.remove(); skipBtn.remove(); });
-	commitBtn.addEventListener('click', async () => {
-		if (state.running) return;
-		commitBtn.disabled = true;
-		skipBtn.disabled = true;
-		commitBtn.textContent = '⏳ Commitando…';
-		try {
-			const r = await window.agentAPI.gitCommit(projectRoot, project.slug, files, taskText);
-			if (r && r.ok) {
-				commitBtn.textContent = '✅ Commit feito' + (r.hash ? ' (' + r.hash + ')' : '');
-				skipBtn.remove();
-				refreshCommitsPanel();
-				return;
-			}
-			showDiag('Falha no commit: ' + ((r && r.error) || 'erro desconhecido'), false);
-		} catch (e) {
-			showDiag('Erro no commit: ' + e.message, false);
-		}
-		commitBtn.disabled = false;
-		skipBtn.disabled = false;
-		commitBtn.textContent = '✅ Commitar';
-	});
 }
 
 async function requestReview(data) {
@@ -1830,6 +2244,7 @@ $('modalRestoreConfirm').addEventListener('click', async () => {
 	btn.textContent = '↩ Restaurar';
 	$('modalRestore').style.display = 'none';
 	pendingRestore = null;
+	try { closeDiffModal(); } catch (e) { }
 	await refreshCommitsPanel();
 });
 $('sessionFilter').addEventListener('input', renderChats);
@@ -1856,6 +2271,22 @@ document.addEventListener('click', async (e) => {
 		btn.textContent = 'Falhou';
 	}
 	setTimeout(() => { btn.textContent = 'Copiar'; }, 1500);
+});
+
+// $('diffTabCommit').addEventListener('click', () => { setDiffMode('commit'); });
+// $('diffTabCurrent').addEventListener('click', () => { setDiffMode('current'); });
+$('diffClose').addEventListener('click', () => { closeDiffModal(); });
+$('diffRestore').addEventListener('click', () => {
+	if (!diffState) return;
+	const btn = $('diffRestore');
+	if (btn && btn.disabled) return;
+	openRestoreModal(diffState.project, diffState.commit, diffState.dirty);
+});
+document.addEventListener('keydown', (e) => {
+	if (e.key !== 'Escape') return;
+	const diffOpen = $('modalDiff') && $('modalDiff').style.display === 'flex';
+	const restoreOpen = $('modalRestore') && $('modalRestore').style.display === 'flex';
+	if (diffOpen && !restoreOpen) closeDiffModal();
 });
 
 window.agentAPI.onCommand((cmd) => {

@@ -1607,6 +1607,23 @@ ipcMain.handle('git:restore', async (event, { projectRoot, slug, hash }) => {
   catch (e) { return { ok: false, error: e.message }; }
 });
 
+ipcMain.handle('git:diff-files', async (event, { projectRoot, slug, hash, mode }) => {
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio' };
+  if (typeof slug !== 'string' || !slug.trim()) return { ok: false, error: 'slug vazio' };
+  if (typeof hash !== 'string' || !hash.trim()) return { ok: false, error: 'hash vazio' };
+  try { return await gitguard.commitDiffFiles(projectRoot, slug, hash, mode); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('git:diff-file', async (event, { projectRoot, slug, hash, mode, file }) => {
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio' };
+  if (typeof slug !== 'string' || !slug.trim()) return { ok: false, error: 'slug vazio' };
+  if (typeof hash !== 'string' || !hash.trim()) return { ok: false, error: 'hash vazio' };
+  if (typeof file !== 'string' || !file.trim()) return { ok: false, error: 'file vazio' };
+  try { return await gitguard.commitFileDiff(projectRoot, slug, hash, mode, file); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
 // ============================================================
 // ABORT
 // ============================================================
@@ -1798,6 +1815,50 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
     try { pruneSessionLog(sessionLog); } catch (e) { }
     notifyProjectsChanged();
 
+    let commitInfo = null;
+    try {
+      const doCommit = !(result && result.aborted);
+      if (doCommit) {
+        const gp = activeProjectId ? projects.getProject(activeProjectId) : null;
+        if (gp && gp.slug && gp.projectRoot) {
+          let title = '';
+          const ct = (result && typeof result.commitTitle === 'string') ? result.commitTitle.trim() : '';
+          if (ct) {
+            title = ct;
+          } else {
+            const sum = (result && typeof result.summary === 'string') ? result.summary : '';
+            const lines = sum.replace(/<<<[\s\S]*?>>>/g, '').split('\n');
+            let first = '';
+            for (const l of lines) {
+              const t = l.trim();
+              if (t) { first = t; break; }
+            }
+            if (first) {
+              title = first.slice(0, 72);
+            } else {
+              title = String(task || '').slice(0, 60);
+            }
+          }
+          try {
+            commitInfo = await gitguard.commitAll(gp.projectRoot, gp.slug, title, task);
+          } catch (e) {
+            commitInfo = { ok: false, error: e && e.message ? e.message : String(e) };
+          }
+          try {
+            if (commitInfo && commitInfo.ok && !commitInfo.skipped) {
+              sendLog('[main] commit automatico: ' + (commitInfo.hash || '') + ' - ' + (commitInfo.message || ''));
+            } else if (commitInfo && commitInfo.ok && commitInfo.skipped) {
+              sendLog('[main] commit automatico ignorado (' + (commitInfo.reason || 'skip') + ')');
+            } else {
+              sendLog('[main] commit automatico falhou: ' + ((commitInfo && commitInfo.error) || 'erro desconhecido'));
+            }
+          } catch (e) { /* ignora */ }
+        }
+      }
+    } catch (e) {
+      commitInfo = { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+
     try { notifyTaskDone(result, startedAt); } catch (e) { /* silencioso */ }
 
     try { setTrayState(result && result.aborted ? 'idle' : 'done'); } catch (e) { /* ignora */ }
@@ -1809,6 +1870,7 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
         needsReview: !!result.needsReview,
         touchedFiles: Array.isArray(result.touchedFiles) ? result.touchedFiles : [],
         reviewPrompt: typeof result.reviewPrompt === 'string' ? result.reviewPrompt : '',
+        commit: commitInfo,
       },
       stats: statsAfterRun(),
       state: buildProjectsState(),
