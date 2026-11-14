@@ -21,7 +21,8 @@
     "@electron-forge/plugin-auto-unpack-natives": "^8.0.1",
     "@electron-forge/plugin-fuses": "^8.0.1",
     "@electron/fuses": "^2.1.3",
-    "electron": "^30.0.0"
+    "electron": "^30.0.0",
+    "javascript-obfuscator": "^5.10.1"
   },
   "build": {
     "appId": "com.opendeepseek.app",
@@ -32,6 +33,7 @@
   },
   "dependencies": {
     "@prettier/plugin-php": "^0.19.6",
+    "bytenode": "^2.1.0",
     "electron-squirrel-startup": "^1.0.1",
     "highlight.js": "^11.12.0",
     "marked": "^7.0.5",

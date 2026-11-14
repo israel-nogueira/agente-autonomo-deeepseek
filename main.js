@@ -11,6 +11,7 @@ const { disableDeepSeekFeatures, resetChat, requestAbort, waitChatReady, resetAb
 const { killActiveProcesses, resetReadCache } = require('./agent/tools');
 const projects = require('./agent/projects');
 const gitguard = require('./agent/gitguard');
+const licensegate = require('./agent/licensegate');
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
@@ -408,18 +409,18 @@ function setTrayState(state) {
   try {
     if (process.platform === 'win32' && win && !win.isDestroyed()) {
       if (next === 'idle') {
-        try { 
+        try {
           // console.log('[overlay] estado=idle (removendo)'); 
         } catch (e) { /* ignora */ }
         try {
           win.setOverlayIcon(null, '');
-          try { 
+          try {
             // console.log('[overlay] setOverlayIcon chamado OK'); 
           } catch (e) { /* ignora */ }
         } catch (e) {
-          try { 
+          try {
             // console.log('[overlay] ERRO: ' + (e && e.message ? e.message : String(e)));
-           } catch (_) { /* ignora */ }
+          } catch (_) { /* ignora */ }
         }
       } else {
         const overlay = overlayIconForState(next);
@@ -1647,6 +1648,51 @@ ipcMain.handle('git:diff-file', async (event, { projectRoot, slug, hash, mode, f
 });
 
 // ============================================================
+// LICENCA (agent/licensegate.js)
+// ============================================================
+function sendLicenseState(state) {
+  try {
+    if (win && !win.isDestroyed()) win.webContents.send('license:state', state);
+  } catch (e) { /* ignora */ }
+}
+
+// Tolerancia esgotada: aborta a tarefa em andamento (mesmo caminho do agent:abort).
+function lockRunForLicense() {
+  if (!running) return;
+  abortRequested = true;
+  if (chatReady()) { try { requestAbort(chatWindow); } catch (e) { } }
+  try { killActiveProcesses(); } catch (e) { }
+  try { win.webContents.send('agent:log', '[licença] tolerância esgotada: tarefa abortada.'); } catch (e) { }
+}
+
+ipcMain.handle('license:getState', async () => licensegate.getState());
+
+ipcMain.handle('license:open', async () => {
+  licensegate.open();
+  return { ok: true };
+});
+
+ipcMain.handle('license:dismiss', async () => {
+  licensegate.dismiss();
+  return { ok: true };
+});
+
+ipcMain.handle('license:checkout', async (event, { valor, payer }) => {
+  try { return await licensegate.startCheckout(valor, payer); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('license:checkoutStatus', async (event, { cobrancaId }) => {
+  try { return await licensegate.pollCheckout(cobrancaId); }
+  catch (e) { return { status: 'ERROR', error: e.message }; }
+});
+
+ipcMain.handle('license:activate', async (event, { code }) => {
+  try { return await licensegate.activateCode(code); }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
+// ============================================================
 // ABORT
 // ============================================================
 ipcMain.handle('agent:abort', async () => {
@@ -1734,6 +1780,9 @@ ipcMain.handle('agent:run', async (event, { task, projectRoot }) => {
 
   if (typeof task !== 'string' || !task.trim()) return { ok: false, error: 'task vazia', stats: stats() };
   if (typeof projectRoot !== 'string' || !projectRoot.trim()) return { ok: false, error: 'projectRoot vazio', stats: stats() };
+
+  const lic = licensegate.allowRun();
+  if (!lic.ok) return { ok: false, error: lic.error, stats: stats() };
 
   if (running) return { ok: false, error: 'ja existe uma tarefa em andamento. Aguarde ou clique em Parar.', stats: stats() };
   if (busyNavigation) return { ok: false, error: 'existe uma operacao em andamento. Aguarde.', stats: stats() };
@@ -2067,6 +2116,9 @@ async function appBoot() {
   if (!win || win.isDestroyed()) return;
   splashStatus('Iniciando Agente DeepSeek…');
   try {
+    licensegate.init({ userDataDir: app.getPath('userData'), onState: sendLicenseState, onLock: lockRunForLicense });
+  } catch (e) { console.warn('[main] licensegate falhou:', e.message); }
+  try {
     splashStatus('Carregando projetos…');
     projects.init(app.getPath('userData'));
     try { history.init(app.getPath('userData')); } catch (e) { console.warn('[main] history.init falhou:', e.message); }
@@ -2089,6 +2141,8 @@ function onBootSuccess() {
     win.show(); win.focus();
     try { setTrayState(trayState); } catch (e) { /* ignora */ }
     try { win.webContents.send('app:ready', { ok: true }); } catch (e) { }
+    try { sendLicenseState(licensegate.getState()); } catch (e) { }
+    try { licensegate.boot(); } catch (e) { }
   }
 }
 
@@ -2129,6 +2183,7 @@ app.on('before-quit', () => {
   isQuitting = true;
   try { persistActiveChatState(); persistRunAllowlist(); projects.flush(); } catch (e) { }
   SUCCEEDED_THIS_SESSION.clear();
+  try { licensegate.stop(); } catch (e) { }
   saveWindowState();
   destroyToast();
   destroyTray();

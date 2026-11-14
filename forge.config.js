@@ -18,6 +18,8 @@ module.exports = {
       /^\/forge\.config\.js$/,
       /^\/\.github/,
     ],
+    // Proteção do fonte: roda depois que o Forge copia os arquivos pra pasta de build
+    afterCopy: [require('./scripts/protect.js')],
   },
   rebuildConfig: {},
   makers: [

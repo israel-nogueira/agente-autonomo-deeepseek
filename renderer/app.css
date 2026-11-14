@@ -859,3 +859,22 @@ button{cursor:pointer}
 .diff-grid>.diff-code.empty{background-color:#10151e;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.02) 0,rgba(255,255,255,.02) 4px,transparent 4px,transparent 8px)}
 .diff-grid>.diff-ln.empty{background-color:#10151e;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.02) 0,rgba(255,255,255,.02) 4px,transparent 4px,transparent 8px)}
 .diff-foot-actions{display:flex;gap:8px;align-items:center;margin-left:auto}
+
+/* Licença: barra no topo do app + modal na frente de tudo */
+#licBar{position:fixed;top:0;left:0;right:0;height:34px;z-index:9000;background:#10151e;border-bottom:1px solid var(--border)}
+.lic-bar-main{height:31px;display:flex;align-items:center;justify-content:center;gap:12px;font-size:12px;color:var(--muted);padding:0 12px}
+.lic-bar-main .btn{padding:3px 12px;font-size:12px;border-radius:6px}
+.lic-bar-track{height:3px;background:#0f1620}
+#licBarFill{height:100%;width:100%;background:var(--blue)}
+#licBar.locked{background:#2a1215}
+#licBar.locked .lic-bar-main{color:#fecaca}
+#licBar.locked #licBarFill{background:#b91c1c;width:100%!important}
+.lic-on .app{height:calc(100dvh - 34px);margin-top:34px}
+#licenseModal{z-index:40000}
+.lic-pay{display:flex;flex-direction:column;gap:10px}
+.lic-row{display:flex;gap:8px;align-items:center}
+.lic-row .modal-input{flex:1;min-width:0}
+.lic-qr{display:block;width:200px;height:200px;margin:0 auto;border-radius:10px;background:#fff;padding:8px}
+.lic-status{font-size:12px;color:var(--muted);text-align:center}
+.lic-code summary{cursor:pointer;color:var(--muted);font-size:12px;margin-bottom:8px}
+.lic-error{font-size:12px;color:#fecaca;background:#7f1d1d;border:1px solid #991b1b;border-radius:8px;padding:8px 10px}

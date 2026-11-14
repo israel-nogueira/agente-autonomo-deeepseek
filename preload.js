@@ -101,3 +101,13 @@ contextBridge.exposeInMainWorld('appAPI', {
   onReady: (cb) => ipcRenderer.on('app:ready', (_, data) => cb(data)),
   retryBoot: () => ipcRenderer.invoke('app:retryBoot'),
 });
+
+contextBridge.exposeInMainWorld('licenseAPI', {
+  getState: () => ipcRenderer.invoke('license:getState'),
+  open: () => ipcRenderer.invoke('license:open'),
+  dismiss: () => ipcRenderer.invoke('license:dismiss'),
+  checkout: (valor, payer) => ipcRenderer.invoke('license:checkout', { valor, payer }),
+  checkoutStatus: (cobrancaId) => ipcRenderer.invoke('license:checkoutStatus', { cobrancaId }),
+  activate: (code) => ipcRenderer.invoke('license:activate', { code }),
+  onState: (cb) => ipcRenderer.on('license:state', (_, data) => cb(data)),
+});

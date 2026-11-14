@@ -15,6 +15,16 @@
 <body>
 
   <div id="bootCover"></div>
+  <!-- Barra de licença (topo do app) -->
+  <div id="licBar" style="display:none">
+    <div class="lic-bar-main">
+      <span id="licBarText"></span>
+      <button class="btn primary" id="licBarOpen" type="button">Liberar app</button>
+    </div>
+    <div class="lic-bar-track">
+      <div id="licBarFill"></div>
+    </div>
+  </div>
 
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <symbol id="i-spark" viewBox="0 0 24 24">
@@ -385,6 +395,60 @@
       </div>
     </div>
   </div>
+
+  
+
+  <!-- Modal: licença -->
+  <div id="licenseModal" class="modal" style="display:none">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2 id="licTitle">Ajude o OpenDeepSeek 💙</h2>
+        <p id="licCaption"></p>
+      </div>
+      <div class="modal-body">
+        <div id="licPay" class="lic-pay">
+          <div id="licStepValue" class="lic-pay">
+            <label class="modal-label" for="licName">Nome completo</label>
+            <input class="modal-input" id="licName" type="text" autocomplete="name" />
+            <label class="modal-label" for="licCpf">CPF (exigido para gerar o PIX)</label>
+            <input class="modal-input" id="licCpf" type="text" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" autocomplete="off" />
+            <label class="modal-label" for="licValue" id="licValueLabel">Valor da ajuda (mínimo R$ 15)</label>
+            <div class="lic-row">
+              <input class="modal-input" id="licValue" type="number" min="15" step="1" value="15" />
+              <button class="btn primary" id="licGenerate" type="button">Gerar PIX</button>
+            </div>
+          </div>
+  
+          <div id="licStepPix" class="lic-pay" style="display:none">
+            <img id="licQr" class="lic-qr" alt="QR Code PIX" />
+            <label class="modal-label" for="licPayload">PIX copia e cola</label>
+            <div class="lic-row">
+              <input class="modal-input" id="licPayload" type="text" readonly />
+              <button class="btn" id="licCopy" type="button">Copiar</button>
+            </div>
+            <div class="lic-status" id="licPayStatus">Aguardando pagamento…</div>
+            <div class="work-dots"><span></span><span></span><span></span></div>
+            <button class="btn" id="licChangeValue" type="button">Trocar valor</button>
+          </div>
+        </div>
+  
+        <details class="lic-code" id="licCodeWrap">
+          <summary>Já tenho um código de ativação</summary>
+          <div class="lic-row">
+            <input class="modal-input" id="licCode" type="text" placeholder="Código de ativação" autocomplete="off" />
+            <button class="btn" id="licActivate" type="button">Ativar</button>
+          </div>
+        </details>
+  
+        <div class="lic-error" id="licError" style="display:none"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="licClose" type="button">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+
 
   <div id="diag-banner"></div>
 

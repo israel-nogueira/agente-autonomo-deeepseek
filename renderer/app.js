@@ -2536,3 +2536,233 @@ async function loadPreviousHistoryPage() {
 		}
 	} catch (e) { }
 }
+
+
+// ============================================================
+// LICENÇA — barra no topo + modal (estado vem do main via licenseAPI)
+// ============================================================
+(function () {
+	if (!window.licenseAPI) return;
+
+	const L = window.licenseAPI;
+	const el = {
+		modal: $('licenseModal'),
+		caption: $('licCaption'),
+		bar: $('licBar'),
+		barText: $('licBarText'),
+		barFill: $('licBarFill'),
+		barOpen: $('licBarOpen'),
+		pay: $('licPay'),
+		stepValue: $('licStepValue'),
+		stepPix: $('licStepPix'),
+		valueLabel: $('licValueLabel'),
+		value: $('licValue'),
+		name: $('licName'),
+		cpf: $('licCpf'),
+		generate: $('licGenerate'),
+		qr: $('licQr'),
+		payload: $('licPayload'),
+		copy: $('licCopy'),
+		payStatus: $('licPayStatus'),
+		changeValue: $('licChangeValue'),
+		code: $('licCode'),
+		activate: $('licActivate'),
+		error: $('licError'),
+		close: $('licClose'),
+	};
+
+	let current = null;
+	let deadlineAt = 0;
+	let tickTimer = null;
+	let cobrancaId = null;
+	let pollTimer = null;
+	let polling = false;
+
+	function fmt(ms) {
+		const s = Math.ceil(ms / 1000);
+		return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+	}
+
+	function setError(msg) {
+		el.error.textContent = msg || '';
+		el.error.style.display = msg ? 'block' : 'none';
+	}
+
+	function captionFor(s) {
+		if (s.reason === 'trial_expired') return 'Seu teste gratuito de 7 dias terminou. Libere o app com uma ajuda única da comunidade para continuar.';
+		if (s.phase === 'trial') return 'Você está no teste gratuito. Se quiser, já pode liberar o app com uma ajuda única da comunidade.';
+		if (s.phase === 'locked') return 'Tempo de uso esgotado. As tarefas ficam bloqueadas até o app ser liberado.';
+		if (s.reason === 'offline') return 'Sem conexão com o servidor de licenças. Tentando reconectar automaticamente…';
+		if (s.reason === 'invalid') return s.message || 'Esta licença não é mais válida neste computador.';
+		return 'Libere o app com uma ajuda única da comunidade. Pagou, o PIX bateu, o app é liberado.';
+	}
+
+	function tick() {
+		if (!current || current.phase !== 'grace') return;
+		const rem = Math.max(0, deadlineAt - performance.now());
+		el.barFill.style.width = (100 - rem / current.graceMs * 100) + '%';
+		const base = current.reason === 'offline' ? 'Sem conexão com o servidor de licenças' : 'App sem licença';
+		el.barText.textContent = base + ' · tempo restante: ' + fmt(rem);
+	}
+
+	function startTick() {
+		if (tickTimer) return;
+		tickTimer = setInterval(tick, 250);
+	}
+
+	function stopTick() {
+		if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+	}
+
+	function stopPolling() {
+		if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+		polling = false;
+	}
+
+	function resetPix() {
+		stopPolling();
+		cobrancaId = null;
+		el.stepPix.style.display = 'none';
+		el.stepValue.style.display = 'flex';
+		el.payStatus.textContent = 'Aguardando pagamento…';
+	}
+
+	async function pollOnce() {
+		if (polling || !cobrancaId) return;
+		polling = true;
+		try {
+			const r = await L.checkoutStatus(cobrancaId);
+			if (r && r.status === 'RECEIVED' && r.unlocked) {
+				stopPolling();
+				el.payStatus.textContent = '✅ Pagamento confirmado! App liberado.';
+			} else if (r && (r.status === 'NOT_FOUND' || r.status === 'ERROR')) {
+				resetPix();
+				setError((r && r.error) || 'Não foi possível confirmar o pagamento. Gere o PIX novamente.');
+			}
+		} catch (e) { /* tenta de novo no próximo ciclo */ }
+		polling = false;
+	}
+
+	function startPolling() {
+		stopPolling();
+		pollTimer = setInterval(pollOnce, 3000);
+	}
+
+	function render(s) {
+		if (!s) return;
+		current = s;
+
+		const inGate = s.phase === 'grace' || s.phase === 'locked' || s.phase === 'trial';
+		el.modal.style.display = (s.showModal && inGate) ? 'flex' : 'none';
+
+		if (s.phase === 'valid') {
+			stopTick();
+			resetPix();
+			setError('');
+			el.bar.style.display = 'none';
+			document.body.classList.remove('lic-on');
+			return;
+		}
+
+		el.caption.textContent = captionFor(s);
+		el.valueLabel.textContent = 'Valor da ajuda (mínimo R$ ' + s.minValue + ')';
+		el.value.min = String(s.minValue);
+		if (!el.value.value || Number(el.value.value) < s.minValue) el.value.value = String(s.minValue);
+		el.pay.style.display = s.reason === 'offline' ? 'none' : 'flex';
+		el.close.textContent = s.phase === 'locked' ? 'Fechar e continuar (1 min)' : 'Fechar';
+
+		if (inGate) {
+			el.bar.style.display = 'block';
+			document.body.classList.add('lic-on');
+		}
+
+		if (s.phase === 'grace') {
+			deadlineAt = performance.now() + s.remainingMs;
+			el.bar.classList.remove('locked');
+			tick();
+			startTick();
+		} else if (s.phase === 'trial') {
+			stopTick();
+			el.bar.classList.remove('locked');
+			const rem = s.trialRemainingMs;
+			const days = Math.ceil(rem / 86400000);
+			el.barText.textContent = 'Teste gratuito · ' + (rem < 86400000 ? 'menos de 24h restantes' : (days === 1 ? '1 dia restante' : days + ' dias restantes'));
+			el.barFill.style.width = Math.min(100, Math.max(0, 100 - rem / s.trialTotalMs * 100)) + '%';
+		} else if (s.phase === 'locked') {
+			stopTick();
+			el.bar.classList.add('locked');
+			el.barText.textContent = 'Bloqueado: tarefas desativadas até liberar o app';
+		} else {
+			stopTick();
+			el.bar.style.display = 'none';
+			document.body.classList.remove('lic-on');
+		}
+	}
+
+	el.generate.addEventListener('click', async () => {
+		const min = current ? current.minValue : 15;
+		const valor = Number(el.value.value);
+		if (!isFinite(valor) || valor < min) {
+			setError('O valor mínimo é R$ ' + min + ',00');
+			return;
+		}
+		const nome = el.name.value.trim();
+		const cpf = el.cpf.value.replace(/\D/g, '');
+		if (nome.length < 3) { setError('Informe seu nome completo.'); return; }
+		if (cpf.length !== 11) { setError('Informe um CPF válido (11 dígitos).'); return; }
+		setError('');
+		el.generate.disabled = true;
+		try {
+			const r = await L.checkout(valor, { nome: nome, cpf: cpf });
+			if (!r || !r.ok) {
+				setError((r && r.error) || 'Falha ao gerar o PIX.');
+				return;
+			}
+			cobrancaId = r.cobranca_id;
+			el.qr.src = r.pix_qrcode;
+			el.payload.value = r.pix_copia_cola;
+			el.payStatus.textContent = 'Aguardando pagamento…';
+			el.stepValue.style.display = 'none';
+			el.stepPix.style.display = 'flex';
+			startPolling();
+		} catch (e) {
+			setError('Falha ao gerar o PIX.');
+		} finally {
+			el.generate.disabled = false;
+		}
+	});
+
+	el.changeValue.addEventListener('click', resetPix);
+
+	el.copy.addEventListener('click', async () => {
+		try {
+			await navigator.clipboard.writeText(el.payload.value);
+		} catch (e) {
+			el.payload.select();
+			try { document.execCommand('copy'); } catch (_) { }
+		}
+		el.copy.textContent = 'Copiado ✓';
+		setTimeout(() => { el.copy.textContent = 'Copiar'; }, 1500);
+	});
+
+	el.activate.addEventListener('click', async () => {
+		const code = el.code.value.trim();
+		if (!code) { setError('Informe o código de ativação.'); return; }
+		setError('');
+		el.activate.disabled = true;
+		try {
+			const r = await L.activate(code);
+			if (!r || !r.ok) setError((r && r.error) || 'Falha na ativação.');
+		} catch (e) {
+			setError('Falha na ativação.');
+		} finally {
+			el.activate.disabled = false;
+		}
+	});
+
+	el.close.addEventListener('click', () => { L.dismiss(); });
+	el.barOpen.addEventListener('click', () => { L.open(); });
+
+	L.onState(render);
+	L.getState().then(render).catch(() => { });
+})();
